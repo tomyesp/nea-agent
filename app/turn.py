@@ -191,7 +191,7 @@ async def run_turn(
 
     # --- Armar mensajes para el LLM ---------------------------------------
     referral = next((m.referral_headline for m in inbound if m.referral_headline), None)
-    offered = await ctx.store.get_offered_slots(conv.id)
+    offered = await ctx.store.get_rental_offers(conv.id)
     profile = await resolve_profile(ctx)
     system = build_system_prompt(
         profile=profile,
@@ -199,7 +199,7 @@ async def run_turn(
         conv=conv,
         referral_headline=referral,
         offered=offered,
-        agenda=ctx.agenda_enabled,
+        inventory=ctx.inventory_enabled,
         tz=_agent_tz(settings),
     )
     # Se traen más mensajes de los que ve el LLM: el candado de cierre cuenta
@@ -339,7 +339,7 @@ async def _tool_loop(
     """Rondas de tool-calling hasta obtener texto final (o rendirse)."""
     for _ in range(MAX_TOOL_ROUNDS):
         reply = await ctx.llm.complete(
-            messages, tools=tool_schemas(ctx.agenda_enabled)
+            messages, tools=tool_schemas(ctx.inventory_enabled)
         )
         if not reply.tool_calls:
             return reply.content  # turno de puro texto

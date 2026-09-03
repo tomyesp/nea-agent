@@ -68,7 +68,7 @@ async def test_turno_con_route_out_cierra_sin_seguimiento(ctx, client, respx_moc
     await asyncio.sleep(0.25)
     assert routes["messages"].call_count == 1
     ficha = json.loads(routes["ficha"].calls[0].request.content)
-    assert ficha["ficha"]["resultado"] == "dio_diy"
+    assert ficha["ficha"]["resultado"] == "descartado"
     conv = next(iter(ctx.store.conversations.values()))
     assert conv.phase == "cerrada"
     assert conv.followup_due_at is None

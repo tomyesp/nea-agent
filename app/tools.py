@@ -1,12 +1,17 @@
-"""Herramientas del LLM: update_ficha, propose_slots, book_session, route_out, handoff.
+"""Herramientas del LLM: buscar_maquinas, consultar_disponibilidad, cotizar,
+crear_reserva_tentativa, update_ficha, route_out, handoff.
 
-Solo se reserva lo que se ofreció, y **quien manda sobre eso es el CRM**:
-Vocero guarda la oferta contra la conversación y rechaza cualquier otro
-instante. La tabla `offered_slots` de Nea es un ESPEJO de esa oferta, no una
-segunda fuente de verdad: sirve para etiquetar con el día en palabras y para
-frenar una alucinación antes de gastar un viaje de red. Si el CRM dice que un
-horario no se ofreció, el espejo está viejo y se resincroniza con lo que él
-mande.
+017 (fork RPM) — Alquiler de maquinaria. El principio es el mismo que tenía el
+agendamiento y no se negocia: **solo se reserva lo que el servidor ofreció**.
+Vocero emite un `oferta_id` contra la conversación y solo acepta ese; la tabla
+`rental_offers` de Nea es un ESPEJO de esa oferta, no una segunda fuente de
+verdad. Sirve para etiquetar bonito y para frenar una alucinación antes de
+gastar un viaje de red. Si el CRM rechaza un `oferta_id`, su palabra manda.
+
+Esto elimina de raíz la clase entera de bugs "el agente prometió una retro que
+no existe, para una fecha ocupada, a un precio inventado": el modelo no puede
+nombrar una máquina fuera del catálogo, no puede calcular un precio, y no
+puede reservar nada que el servidor no le haya ofrecido antes.
 
 Un fallo del CRM dentro de una tool regresa `{"ok": false, ...}` al LLM —
 nunca tumba el turno.
@@ -14,29 +19,23 @@ nunca tumba el turno.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from app.crm import (
-    AgendaUnavailable,
     CrmConflict,
     CrmError,
-    SlotNotOffered,
-    SlotTaken,
+    InventoryUnavailable,
+    RecentlyTaken,
 )
 from app.profile import BusinessProfile
-from app.state import AppContext, Conversation, OfferedSlot
+from app.state import AppContext, Conversation, RentalOffer
 
 logger = logging.getLogger("nea.tools")
 
-# Cuántos huecos quedan RESERVABLES tras un propose_slots. El agente muestra 3
-# a la vez (regla del prompt), pero guardar solo 3 lo dejaba sin nada que
-# ofrecer cuando el lead pedía otro día: el catálogo reservable es más ancho
-# que el menú que se enseña.
-MAX_OFFERED = 12
-# Reparto pedido al CRM: hasta 3 huecos por día, en 5 días distintos.
-OFFER_PER_DAY = 3
-OFFER_DAYS = 5
+# Cuántas ofertas quedan RESERVABLES tras una consulta. Se guardan todas las
+# que mande el CRM (la del modelo pedido y sus alternativas): el catálogo
+# reservable es más ancho que lo que el agente enseña en un mensaje.
+MAX_OFFERED = 8
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -45,24 +44,41 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "update_ficha",
             "description": (
                 "Guarda o actualiza la ficha del lead en el CRM (merge: solo los "
-                "campos que mandes). Llámala en cuanto descubras un dato nuevo."
+                "campos que mandes). Llamala apenas descubras un dato nuevo."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "rubro": {"type": "string"},
-                    "rol": {
+                    "tipo_obra": {
                         "type": "string",
-                        "description": "dueno | hijo_del_dueno | empleado | otro",
+                        "description": "Qué está construyendo o haciendo (ej. 'zanjeo para cloacas', 'playón de hormigón')",
                     },
-                    "tamano_aprox": {"type": "string"},
-                    "sistemas": {"type": "string"},
-                    "dolor_principal": {"type": "string"},
-                    "geo": {"type": "string"},
+                    "localidad_obra": {
+                        "type": "string",
+                        "description": "Dónde es la obra (localidad/barrio). Define el traslado.",
+                    },
+                    "maquina_interes": {
+                        "type": "string",
+                        "description": "El modelo del catálogo que le interesa, con el nombre EXACTO del catálogo",
+                    },
+                    "duracion_estimada": {
+                        "type": "string",
+                        "description": "Cuántos días/semanas la necesita",
+                    },
+                    "fecha_inicio_deseada": {
+                        "type": "string",
+                        "description": "Cuándo la quiere arrancar (como lo dijo el lead)",
+                    },
+                    "requiere_operario": {"type": "boolean"},
+                    "requiere_traslado": {"type": "boolean"},
+                    "empresa": {
+                        "type": "string",
+                        "description": "Empresa o constructora, si la menciona",
+                    },
                     "calificado": {"type": "boolean"},
                     "resultado": {
                         "type": "string",
-                        "description": "agendo | dio_diy | handoff | sin_respuesta",
+                        "description": "reservo | cotizo | handoff | descartado | sin_respuesta",
                     },
                     "notas": {"type": "string"},
                 },
@@ -72,70 +88,179 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "propose_slots",
+            "name": "buscar_maquinas",
             "description": (
-                "Consulta la disponibilidad real de la agenda del negocio. Te "
-                "regresa los huecos libres REPARTIDOS entre los próximos días, "
-                "cada uno con su día en palabras (hoy/mañana/nombre del día). "
-                "Ofrece al lead máximo 3, los que embonen con lo que pidió. Si "
-                "el día que pidió no aparece, es que no hay agenda ese día: "
-                "dilo. SOLO estos horarios serán reservables después."
-            ),
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "book_session",
-            "description": (
-                "Reserva la cita en uno de los horarios previamente ofrecidos. "
-                "start_utc debe ser EXACTAMENTE el start_utc de un slot ofrecido "
-                "en esta conversación. Llámala SOLO después de haber nombrado el "
-                "día completo y de que el lead lo aceptara sin ambigüedad."
+                "Consulta el catálogo REAL de máquinas del negocio: modelos, "
+                "marcas, specs, si requieren operario y su tarifa de referencia. "
+                "Usala apenas el lead insinúe qué necesita, incluso si lo dice "
+                "vago ('algo para mover tierra'): te devuelve de qué dispone el "
+                "negocio y recién ahí podés recomendar.\n"
+                "REGLA DURA: no podés nombrarle al lead NINGUNA máquina que no "
+                "haya salido de esta herramienta. Si no está en el catálogo, el "
+                "negocio no la tiene — decilo derecho y ofrecé lo que sí hay."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "start_utc": {
-                        "type": "string",
-                        "description": "ISO 8601 UTC del slot elegido, tal cual se ofreció",
-                    },
-                    "dia_confirmado": {
+                    "consulta": {
                         "type": "string",
                         "description": (
-                            "Lo que el lead escribió para aceptar ESE día concreto. "
-                            "Si no puedes citarlo, todavía no confirmó: pregunta "
-                            "en vez de reservar."
+                            "Palabras del lead para filtrar (ej. 'retro', 'grúa', "
+                            "'mover tierra'). Vacío = catálogo completo."
                         ),
-                    },
+                    }
                 },
-                "required": ["start_utc", "dia_confirmado"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "reschedule_session",
+            "name": "consultar_disponibilidad",
             "description": (
-                "Mueve la cita YA agendada del lead a otro horario ofrecido. "
-                "Mismo protocolo que book_session: primero propose_slots, luego "
-                "confirmas el día completo, y hasta entonces mueves."
+                "Pregunta si una máquina concreta está libre en un rango de "
+                "fechas, y de paso EMITE la oferta reservable. Necesita el "
+                "modelo_id exacto que te dio buscar_maquinas.\n"
+                "Te devuelve una de dos cosas:\n"
+                "· disponible=true con una o más ofertas, cada una con su "
+                "oferta_id, su etiqueta y su precio total. SOLO estas ofertas "
+                "serán reservables después: ningún otro id, ninguna otra fecha.\n"
+                "· disponible=false con la próxima fecha libre y alternativas "
+                "de máquinas parecidas que SÍ están libres en ese rango. Nunca "
+                "le digas 'no hay' a secas: ofrecé la fecha o la alternativa.\n"
+                "El precio que viene acá es el que podés decir. No lo redondees "
+                "ni le sumes nada de tu cabeza."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "start_utc": {
+                    "modelo_id": {
                         "type": "string",
-                        "description": "ISO 8601 UTC del nuevo slot, tal cual se ofreció",
+                        "description": "El modelo_id EXACTO del catálogo",
                     },
-                    "dia_confirmado": {
+                    "desde": {
                         "type": "string",
-                        "description": "Lo que el lead escribió para aceptar ESE día",
+                        "description": "Primer día del alquiler, AAAA-MM-DD",
+                    },
+                    "hasta": {
+                        "type": "string",
+                        "description": (
+                            "Día de devolución, AAAA-MM-DD. Es exclusivo: del 5 "
+                            "al 12 son 7 días de alquiler."
+                        ),
                     },
                 },
-                "required": ["start_utc", "dia_confirmado"],
+                "required": ["modelo_id", "desde", "hasta"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cotizar",
+            "description": (
+                "Pide el precio desglosado de un alquiler: base por los días, "
+                "traslado, operario e IVA. Usala cuando el lead pregunte cuánto "
+                "sale, o cuando necesites sumarle el traslado a una oferta.\n"
+                "REGLA DURA: los precios SOLO salen de acá o de una oferta. "
+                "Nunca los calcules, los estimes, los redondees ni los "
+                "'aproximes' vos — ni siquiera si el lead te apura o si te "
+                "parece obvio multiplicar la diaria por los días (el negocio "
+                "tiene escalones semanales y mensuales que no son eso)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "modelo_id": {
+                        "type": "string",
+                        "description": "El modelo_id EXACTO del catálogo",
+                    },
+                    "dias": {"type": "integer", "description": "Días de alquiler"},
+                    "con_traslado": {
+                        "type": "boolean",
+                        "description": "Si el negocio lleva y trae la máquina",
+                    },
+                    "km": {
+                        "type": "number",
+                        "description": "Distancia a la obra en km (solo si con_traslado)",
+                    },
+                },
+                "required": ["modelo_id", "dias"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "crear_reserva_tentativa",
+            "description": (
+                "Toma la máquina para el lead. oferta_id tiene que ser "
+                "EXACTAMENTE uno de los que te dio consultar_disponibilidad en "
+                "ESTA conversación — no inventes uno ni reuses uno viejo.\n"
+                "Llamala SOLO después de haber nombrado la máquina, las fechas "
+                "y el precio completos, y de que el lead aceptara sin "
+                "ambigüedad. `fechas_confirmadas` es lo que el lead escribió "
+                "para aceptar ESE rango: si no lo podés citar, todavía no "
+                "confirmó — preguntá en vez de reservar.\n"
+                "OJO con lo que decís después: la reserva queda TENTATIVA. "
+                "Nunca digas 'confirmada' ni 'ya está reservada en firme': "
+                "decile que se la dejás tomada y que un asesor lo confirma."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "oferta_id": {
+                        "type": "string",
+                        "description": "El oferta_id exacto de una oferta de esta conversación",
+                    },
+                    "fechas_confirmadas": {
+                        "type": "string",
+                        "description": (
+                            "Lo que el lead escribió para aceptar ESE rango de "
+                            "fechas. Si no podés citarlo, no confirmó todavía."
+                        ),
+                    },
+                    "localidad_obra": {
+                        "type": "string",
+                        "description": "Dónde se entrega, si el lead ya lo dijo",
+                    },
+                },
+                "required": ["oferta_id", "fechas_confirmadas"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cambiar_reserva_tentativa",
+            "description": (
+                "Mueve la reserva que YA le tomaste al lead EN ESTA "
+                "conversación a otra oferta, cuando cambió de fechas o de "
+                "máquina antes de que un asesor se la confirme. Mismo "
+                "protocolo que crear_reserva_tentativa: primero "
+                "consultar_disponibilidad con las fechas nuevas, después "
+                "confirmás con el lead, y recién ahí movés con el oferta_id "
+                "nuevo.\n"
+                "Usá ESTA y no crear_reserva_tentativa cuando ya le tomaste "
+                "una: si creás otra, el negocio queda con dos máquinas "
+                "bloqueadas para el mismo cliente.\n"
+                "Si la reserva ya se la confirmó un asesor, o si el lead quiere "
+                "CANCELAR, esto no aplica: eso lo decide una persona, hacé "
+                "handoff."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "oferta_id": {
+                        "type": "string",
+                        "description": "El oferta_id nuevo, de esta conversación",
+                    },
+                    "fechas_confirmadas": {
+                        "type": "string",
+                        "description": "Lo que el lead escribió para aceptar el rango NUEVO",
+                    },
+                },
+                "required": ["oferta_id", "fechas_confirmadas"],
             },
         },
     },
@@ -144,7 +269,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "route_out",
             "description": (
-                "Marca al lead como no calificado (hoy). Después despídete con "
+                "Marca al lead como no calificado (hoy). Después despedite con "
                 "honestidad, compartiendo los recursos alternativos del negocio "
                 "si existen, puerta abierta."
             ),
@@ -158,14 +283,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Pasa la conversación a un humano del negocio y pausa la IA. Tu "
                 "mensaje de despedida se envía ANTES de la pausa — salvo en el "
-                "handoff por hostilidad, donde cierras sobrio sin anunciarlo."
+                "handoff por hostilidad, donde cerrás sobrio sin anunciarlo."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "reason": {
                         "type": "string",
-                        "description": "Motivo breve (p.ej. 'pidió humano', 'duda fuera del conocimiento')",
+                        "description": "Motivo breve (p.ej. 'pidió humano', 'pide descuento')",
                     }
                 },
             },
@@ -174,98 +299,80 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
-# Herramientas que solo tienen sentido si el CRM agenda.
-AGENDA_TOOLS = frozenset({"propose_slots", "book_session", "reschedule_session"})
+# Herramientas que solo tienen sentido si el CRM tiene inventario.
+INVENTORY_TOOLS = frozenset(
+    {
+        "buscar_maquinas",
+        "consultar_disponibilidad",
+        "cotizar",
+        "crear_reserva_tentativa",
+        "cambiar_reserva_tentativa",
+    }
+)
 
 
-def tool_schemas(agenda_enabled: bool = True) -> list[dict[str, Any]]:
+def tool_schemas(inventory_enabled: bool = True) -> list[dict[str, Any]]:
     """El catálogo que se le ofrece al modelo en ESTE turno.
 
-    Contra un CRM sin agenda no se le enseñan las herramientas de agendar: si
-    se le enseñan, las llama, fallan todas y el lead recibe evasivas en vez de
-    un handoff limpio. Que no exista la herramienta es más claro que pedirle al
-    prompt que se acuerde de no usarla.
+    Contra un CRM sin inventario no se le enseñan las herramientas de
+    maquinaria: si se le enseñan, las llama, fallan todas y el lead recibe
+    evasivas en vez de un handoff limpio. Que no exista la herramienta es más
+    claro que pedirle al prompt que se acuerde de no usarla.
     """
-    if agenda_enabled:
+    if inventory_enabled:
         return TOOL_SCHEMAS
     return [
         t
         for t in TOOL_SCHEMAS
-        if t.get("function", {}).get("name") not in AGENDA_TOOLS
+        if t.get("function", {}).get("name") not in INVENTORY_TOOLS
     ]
 
 
-def _meeting(result: dict[str, Any]) -> tuple[str | None, bool]:
-    """Enlace de la reunión y si el CRM lo dejó pendiente.
-
-    Vocero devuelve `meetingLink` desde que la entrega de la reunión es un
-    conector (puede ser Zoom, Google Meet o la sala fija del negocio); antes
-    era `zoomJoinUrl`, y ese nombre se sigue aceptando para no romper un CRM
-    viejo. Leer solo el viejo hacía que el enlace llegara SIEMPRE vacío contra
-    un Vocero actual: la cita se creaba bien y el lead se quedaba sin por dónde
-    entrar.
-
-    `linkPending` es lo que evita prometer de más: la cita existe pero el
-    proveedor todavía no entregó el enlace, así que se confirma la cita y se
-    dice que el enlace llega en un momento.
-    """
-    link = result.get("meetingLink") or result.get("zoomJoinUrl")
-    pending = bool(result.get("linkPending"))
-    return (str(link) if link else None), pending
-
-
-def _iso_z(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _parse_utc(value: str) -> datetime | None:
+def _pesos(cents: Any) -> str:
+    """Centavos → '$1.391.500'. El LLM copia esto tal cual: nada de decimales
+    ni de notación científica, que el modelo después lee mal y dice otra cosa."""
     try:
-        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except (TypeError, ValueError, AttributeError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+        value = int(cents) // 100
+    except (TypeError, ValueError):
+        return "?"
+    return "$" + f"{value:,}".replace(",", ".")
 
 
-def _label_of(raw: dict[str, Any], start: datetime) -> str:
-    """Etiqueta con el día en palabras: "hoy viernes 7 de agosto, 10:30".
-
-    La corta del CRM ("vie 7 ago, 10:30") se presta a que el lead entienda
-    otro día: basta que conteste "10:30, de mañana" a una oferta de HOY para
-    agendar mal. Si el CRM no manda `dayLabel` (respuestas sin reparto, p. ej.
-    las alternativas de un slot_taken), se cae a la corta.
-    """
-    day_label = str(raw.get("dayLabel") or "").strip()
-    time = str(raw.get("time") or "").strip()
-    if day_label and time:
-        return f"{day_label}, {time}"
-    return str(raw.get("label") or _iso_z(start))
-
-
-def _slots_from_payload(
-    conversation_id: int, raw_slots: list[dict[str, Any]]
-) -> list[OfferedSlot]:
-    """Convierte slots del CRM ({startUtc,endUtc,label}) a OfferedSlot, tolerante."""
-    out: list[OfferedSlot] = []
-    for raw in raw_slots[:MAX_OFFERED]:
-        start = _parse_utc(str(raw.get("startUtc") or ""))
-        if start is None:
+def _offers_from_payload(
+    conversation_id: int, raw_offers: list[dict[str, Any]]
+) -> list[RentalOffer]:
+    """Convierte ofertas del CRM a RentalOffer, tolerante a campos faltantes."""
+    out: list[RentalOffer] = []
+    for raw in raw_offers[:MAX_OFFERED]:
+        offer_id = str(raw.get("ofertaId") or "").strip()
+        if not offer_id:
             continue
-        end = _parse_utc(str(raw.get("endUtc") or "")) if raw.get("endUtc") else None
         out.append(
-            OfferedSlot(
+            RentalOffer(
                 conversation_id=conversation_id,
-                start_utc=start,
-                end_utc=end,
-                label=_label_of(raw, start),
+                offer_id=offer_id,
+                model_id=str(raw.get("modeloId") or ""),
+                label=str(raw.get("etiqueta") or offer_id),
+                desde=str(raw.get("desde") or ""),
+                hasta=str(raw.get("hasta") or ""),
+                amount_cents=int(raw.get("montoCotizadoCents") or 0),
             )
         )
     return out
 
 
-def _slots_for_llm(slots: list[OfferedSlot]) -> list[dict[str, str]]:
-    return [{"start_utc": _iso_z(s.start_utc), "label": s.label} for s in slots]
+def _offers_for_llm(offers: list[RentalOffer]) -> list[dict[str, Any]]:
+    return [
+        {
+            "oferta_id": o.offer_id,
+            "modelo_id": o.model_id,
+            "etiqueta": o.label,
+            "desde": o.desde,
+            "hasta": o.hasta,
+            "precio_total": _pesos(o.amount_cents),
+        }
+        for o in offers
+    ]
 
 
 class ToolRuntime:
@@ -292,12 +399,16 @@ class ToolRuntime:
         try:
             if name == "update_ficha":
                 return await self._update_ficha(args)
-            if name == "propose_slots":
-                return await self._propose_slots()
-            if name == "book_session":
-                return await self._book_session(args)
-            if name == "reschedule_session":
-                return await self._reschedule_session(args)
+            if name == "buscar_maquinas":
+                return await self._buscar_maquinas(args)
+            if name == "consultar_disponibilidad":
+                return await self._consultar_disponibilidad(args)
+            if name == "cotizar":
+                return await self._cotizar(args)
+            if name == "crear_reserva_tentativa":
+                return await self._crear_reserva(args)
+            if name == "cambiar_reserva_tentativa":
+                return await self._cambiar_reserva(args)
             if name == "route_out":
                 return await self._route_out()
             if name == "handoff":
@@ -309,7 +420,7 @@ class ToolRuntime:
             return {
                 "ok": False,
                 "error": "crm_error",
-                "detalle": "no pude completar la acción; continúa la conversación o haz handoff",
+                "detalle": "no pude completar la acción; seguí la conversación o hacé handoff",
             }
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -320,235 +431,441 @@ class ToolRuntime:
         await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
         return {"ok": True}
 
-    async def _propose_slots(self) -> dict[str, Any]:
-        # La conversación va SIEMPRE: es contra ella que el CRM registra la
-        # oferta, y sin ella no hay nada reservable después.
-        try:
-            raw = await self._ctx.crm.get_availability(
-                self._crm_conv_id,
-                limit=MAX_OFFERED,
-                per_day=OFFER_PER_DAY,
-                days=OFFER_DAYS,
-            )
-        except AgendaUnavailable:
-            return self._sin_agenda()
-        slots = _slots_from_payload(self._conv.id, raw)
-        if not slots:
-            return {
-                "ok": False,
-                "error": "sin_disponibilidad",
-                "detalle": "no hay horarios abiertos; ofrece handoff para coordinar directo",
-            }
-        await self._ctx.store.replace_offered_slots(self._conv.id, slots)
-        self.proposed = True
-        return {
-            "ok": True,
-            "slots": _slots_for_llm(slots),
-            "dias_con_agenda": sorted(
-                {s.label.rsplit(",", 1)[0].strip() for s in slots}
-            ),
-            "instrucciones": (
-                "esta es TODA la agenda abierta: los días que no aparecen aquí "
-                "NO tienen agenda, dilo en vez de mover al lead a otro día. "
-                "Ofrécele máximo 3, con su etiqueta tal cual (día incluido), "
-                "los que embonen con lo que pidió."
-            ),
-        }
-
-    async def _resolve_offered(
-        self, args: dict[str, Any], accion: str
-    ) -> tuple[OfferedSlot | None, dict[str, Any] | None]:
-        """Slot elegido, o el error listo para devolverle al LLM.
-
-        Validación server-side por epoch exacto: solo lo ofrecido es reservable.
-        """
-        wanted = _parse_utc(str(args.get("start_utc") or ""))
-        offered = await self._ctx.store.get_offered_slots(self._conv.id)
-        if wanted is None:
-            return None, {
-                "ok": False,
-                "error": "start_utc_invalido",
-                "slots_ofrecidos": _slots_for_llm(offered),
-            }
-        chosen = next(
-            (
-                s
-                for s in offered
-                if int(s.start_utc.timestamp()) == int(wanted.timestamp())
-            ),
-            None,
-        )
-        if chosen is None:
-            logger.info(
-                "tools: %s rechazado — %s no está entre los ofrecidos",
-                accion,
-                args.get("start_utc"),
-            )
-            return None, {
-                "ok": False,
-                "error": "slot_no_ofrecido",
-                "detalle": "solo puedes agendar un horario que ya ofreciste",
-                "slots_ofrecidos": _slots_for_llm(offered),
-            }
-        # Deja rastro de sobre qué frase del lead se tomó la decisión: cuando
-        # una cita sale mal, esto dice si hubo confirmación o se asumió.
-        logger.info(
-            "tools: %s a %s (el lead confirmó con: %r)",
-            accion,
-            chosen.label,
-            str(args.get("dia_confirmado") or "")[:120],
-        )
-        return chosen, None
-
-    def _sin_agenda(self) -> dict[str, Any]:
-        """Este CRM no tiene agenda: dejar de prometer citas, no reintentar."""
-        self._ctx.agenda_enabled = False
-        logger.info("tools: el CRM no expone agenda — agendamiento desactivado")
+    def _sin_inventario(self) -> dict[str, Any]:
+        """Este CRM no tiene catálogo: dejar de prometer máquinas, no reintentar."""
+        self._ctx.inventory_enabled = False
+        logger.info("tools: el CRM no expone inventario — maquinaria desactivada")
         return {
             "ok": False,
-            "error": "sin_agenda",
+            "error": "sin_inventario",
             "detalle": (
-                "este negocio no agenda por aquí; no ofrezcas horarios ni "
-                "prometas cita — resuelve lo que puedas y haz handoff"
+                "este negocio no maneja el catálogo por acá; no ofrezcas "
+                "máquinas ni precios — resolvé lo que puedas y hacé handoff"
             ),
         }
 
-    async def _resync_offer(
-        self, exc: SlotNotOffered, accion: str
-    ) -> dict[str, Any]:
-        """El CRM no reconoce ese horario: su lista manda, la nuestra se tira.
+    async def _buscar_maquinas(self, args: dict[str, Any]) -> dict[str, Any]:
+        consulta = str(args.get("consulta") or "").strip()
+        try:
+            data = await self._ctx.crm.get_catalogo(consulta or None)
+        except InventoryUnavailable:
+            return self._sin_inventario()
+        modelos = list(data.get("modelos") or [])
+        if not modelos:
+            # Con filtro y sin resultados, reintentar sin filtro sería adivinar
+            # por el lead: mejor decirle que de eso no hay y mostrar qué sí hay.
+            return {
+                "ok": True,
+                "maquinas": [],
+                "instrucciones": (
+                    "el catálogo no tiene nada que coincida con eso. Decíselo "
+                    "derecho y volvé a llamar buscar_maquinas SIN consulta para "
+                    "ofrecerle lo que el negocio sí tiene."
+                ),
+            }
+        maquinas = []
+        for m in modelos:
+            tarifa = m.get("tarifa") or {}
+            maquinas.append(
+                {
+                    "modelo_id": m.get("modeloId"),
+                    "nombre": m.get("nombre"),
+                    "marca": m.get("marca"),
+                    "categoria": m.get("categoria"),
+                    "descripcion": m.get("descripcion"),
+                    "specs": m.get("specs") or {},
+                    "requiere_operario": bool(m.get("requiereOperario")),
+                    "unidades_en_flota": m.get("unidades"),
+                    "tarifa_diaria_referencia": _pesos(tarifa.get("diariaCents"))
+                    if tarifa.get("diariaCents") is not None
+                    else None,
+                }
+            )
+        return {
+            "ok": True,
+            "maquinas": maquinas,
+            "instrucciones": (
+                "estas son TODAS las máquinas del negocio que aplican: no "
+                "nombres ninguna que no esté acá. La tarifa es de referencia "
+                "(sin IVA ni traslado) — para decir un precio usá cotizar o el "
+                "de una oferta. 'unidades_en_flota' NO es disponibilidad: para "
+                "saber si está libre en unas fechas, consultar_disponibilidad."
+            ),
+        }
 
-        Pasa cuando el espejo local quedó viejo — por ejemplo si el CRM
-        reemplazó la oferta por su cuenta. Antes esto caía en el `except
-        CrmError` genérico y el agente solo decía "no pude"; ahora vuelve a
-        ofrecer lo que el CRM sí tiene registrado.
-        """
-        fresh = _slots_from_payload(self._conv.id, exc.slots)
-        await self._ctx.store.replace_offered_slots(self._conv.id, fresh)
-        logger.info(
-            "tools: %s rechazado por el CRM (no ofrecido) — oferta resincronizada a %d",
-            accion,
-            len(fresh),
-        )
-        if not fresh:
+    async def _consultar_disponibilidad(self, args: dict[str, Any]) -> dict[str, Any]:
+        model_id = str(args.get("modelo_id") or "").strip()
+        desde = str(args.get("desde") or "").strip()
+        hasta = str(args.get("hasta") or "").strip()
+        if not (model_id and desde and hasta):
             return {
                 "ok": False,
-                "error": "slot_no_ofrecido",
-                "detalle": (
-                    "el CRM no tiene horarios ofrecidos en esta conversación; "
-                    "vuelve a llamar propose_slots antes de agendar"
+                "error": "faltan_datos",
+                "detalle": "necesito modelo_id del catálogo, desde y hasta (AAAA-MM-DD)",
+            }
+        try:
+            data = await self._ctx.crm.get_disponibilidad(
+                self._crm_conv_id, model_id, desde, hasta
+            )
+        except InventoryUnavailable:
+            return self._sin_inventario()
+        except CrmConflict as exc:
+            if exc.code in ("modelo_desconocido", "not_found"):
+                return {
+                    "ok": False,
+                    "error": "modelo_desconocido",
+                    "detalle": (
+                        "ese modelo_id no existe en el catálogo; volvé a llamar "
+                        "buscar_maquinas y usá un modelo_id de ahí"
+                    ),
+                }
+            if exc.code == "rango_invalido":
+                return {
+                    "ok": False,
+                    "error": "rango_invalido",
+                    "detalle": "las fechas no son válidas; pedile al lead que las aclare",
+                }
+            if exc.code == "sin_tarifa":
+                return {
+                    "ok": False,
+                    "error": "sin_tarifa",
+                    "detalle": (
+                        "esa máquina todavía no tiene precio cargado: no la "
+                        "ofrezcas y hacé handoff para que la cotice una persona"
+                    ),
+                }
+            raise
+
+        disponible = bool(data.get("disponible"))
+        raw = list(data.get("ofertas") or []) if disponible else list(
+            data.get("alternativas") or []
+        )
+        offers = _offers_from_payload(self._conv.id, raw)
+        # Reemplazo completo: la oferta vigente es siempre la última ronda.
+        await self._ctx.store.replace_rental_offers(self._conv.id, offers)
+        self.proposed = True
+
+        if disponible:
+            return {
+                "ok": True,
+                "disponible": True,
+                "ofertas": _offers_for_llm(offers),
+                "instrucciones": (
+                    "ofrecele la máquina con SU etiqueta y SU precio_total tal "
+                    "cual (ese precio ya lleva IVA y NO lleva traslado). Cuando "
+                    "acepte, reservá con crear_reserva_tentativa usando el "
+                    "oferta_id exacto. Si quiere traslado, cotizá aparte."
                 ),
             }
         return {
-            "ok": False,
-            "error": "slot_no_ofrecido",
-            "detalle": (
-                "ese horario ya no está ofrecido; ofrécele estos, que son los "
-                "que el negocio tiene reservados para esta conversación"
-            ),
-            "slots": _slots_for_llm(fresh),
-        }
-
-    async def _book_session(self, args: dict[str, Any]) -> dict[str, Any]:
-        chosen, error = await self._resolve_offered(args, "book_session")
-        if error is not None or chosen is None:
-            return error or {"ok": False, "error": "slot_no_ofrecido"}
-        try:
-            result = await self._ctx.crm.create_booking(
-                self._crm_conv_id, _iso_z(chosen.start_utc)
-            )
-        except SlotTaken as exc:
-            # El slot se ocupó entre oferta y elección: alternativas frescas.
-            fresh = _slots_from_payload(self._conv.id, exc.slots)
-            await self._ctx.store.replace_offered_slots(self._conv.id, fresh)
-            return {
-                "ok": False,
-                "error": "slot_taken",
-                "detalle": "ese horario se acaba de ocupar; discúlpate breve y ofrece estas alternativas",
-                "slots": _slots_for_llm(fresh),
-            }
-        except SlotNotOffered as exc:
-            return await self._resync_offer(exc, "book_session")
-        except AgendaUnavailable:
-            return self._sin_agenda()
-        await self._ctx.store.clear_offered_slots(self._conv.id)
-        self.booked = True
-        try:
-            await self._ctx.crm.put_ficha(
-                self._crm_conv_id, {"calificado": True, "resultado": "agendo"}
-            )
-        except CrmError as exc:  # best-effort: la cita ya existe
-            logger.warning("tools: no pude actualizar ficha tras booking: %s", exc)
-        return {
             "ok": True,
-            # La etiqueta del slot ofrecido trae el día en palabras; la del
-            # CRM es la corta. Se repite ESTA para que el lead lea el día.
-            "label": chosen.label or result.get("label"),
-            "meeting_url": _meeting(result)[0],
-            "enlace_pendiente": _meeting(result)[1],
+            "disponible": False,
+            "motivo": data.get("motivo"),
+            "proxima_fecha_libre": data.get("proximaFechaLibre"),
+            "alternativas": _offers_for_llm(offers),
             "instrucciones": (
-                "confirma el día COMPLETO y la hora tal cual dice label, "
-                "comparte meeting_url si viene y menciona lo que el negocio "
-                "pida para llegar preparado. Si enlace_pendiente es true, la "
-                "cita SÍ quedó: di que el enlace le llega por aquí en un "
-                "momento, no prometas uno que no tienes"
+                "esa máquina está tomada en ese rango. NO cortes con un 'no "
+                "hay': ofrecele la proxima_fecha_libre, o alguna de las "
+                "alternativas (que son máquinas parecidas y SÍ están libres en "
+                "las fechas que pidió, con su oferta_id ya reservable). Si no "
+                "hay ni una ni otra, ahí sí hacé handoff."
             ),
         }
 
-    async def _reschedule_session(self, args: dict[str, Any]) -> dict[str, Any]:
-        chosen, error = await self._resolve_offered(args, "reschedule_session")
-        if error is not None or chosen is None:
-            return error or {"ok": False, "error": "slot_no_ofrecido"}
+    async def _cotizar(self, args: dict[str, Any]) -> dict[str, Any]:
+        model_id = str(args.get("modelo_id") or "").strip()
         try:
-            result = await self._ctx.crm.reschedule_booking(
-                self._crm_conv_id, _iso_z(chosen.start_utc)
-            )
-        except SlotTaken as exc:
-            fresh = _slots_from_payload(self._conv.id, exc.slots)
-            await self._ctx.store.replace_offered_slots(self._conv.id, fresh)
+            dias = int(args.get("dias") or 0)
+        except (TypeError, ValueError):
+            dias = 0
+        if not model_id or dias < 1:
             return {
                 "ok": False,
-                "error": "slot_taken",
-                "detalle": "ese horario se acaba de ocupar; discúlpate breve y ofrece estas alternativas",
-                "slots": _slots_for_llm(fresh),
+                "error": "faltan_datos",
+                "detalle": "necesito modelo_id del catálogo y cuántos días",
             }
-        except SlotNotOffered as exc:
-            return await self._resync_offer(exc, "reschedule_session")
-        except AgendaUnavailable:
-            return self._sin_agenda()
+        con_traslado = bool(args.get("con_traslado"))
+        km = args.get("km")
+        try:
+            data = await self._ctx.crm.post_cotizar(
+                model_id,
+                dias,
+                con_traslado=con_traslado,
+                km=float(km) if km is not None else None,
+            )
+        except InventoryUnavailable:
+            return self._sin_inventario()
         except CrmConflict as exc:
-            if exc.code == "no_booking":
+            if exc.code == "sin_tarifa":
                 return {
                     "ok": False,
-                    "error": "sin_cita",
-                    "detalle": "el lead no tiene cita por delante; usa book_session",
+                    "error": "sin_tarifa",
+                    "detalle": (
+                        "esa máquina no tiene precio cargado: no inventes uno, "
+                        "hacé handoff para que la cotice una persona"
+                    ),
+                }
+            if exc.code in ("modelo_desconocido", "not_found"):
+                return {
+                    "ok": False,
+                    "error": "modelo_desconocido",
+                    "detalle": "ese modelo_id no existe; volvé a llamar buscar_maquinas",
                 }
             raise
-        await self._ctx.store.clear_offered_slots(self._conv.id)
-        self.booked = True
+
+        g = data.get("desglose") or {}
         return {
             "ok": True,
-            "label": chosen.label or result.get("label"),
-            "meeting_url": _meeting(result)[0],
-            "enlace_pendiente": _meeting(result)[1],
+            "modelo": data.get("modelo"),
+            "dias": data.get("dias"),
+            "escalon": data.get("escalon"),
+            "alquiler": _pesos(g.get("baseCents")),
+            "traslado": _pesos(g.get("trasladoCents")) if g.get("trasladoCents") else None,
+            "operario": _pesos(g.get("operarioCents")) if g.get("operarioCents") else None,
+            "subtotal": _pesos(g.get("subtotalCents")),
+            "iva": _pesos(g.get("ivaCents")),
+            "total": _pesos(g.get("totalCents")),
+            "requiere_operario": bool(data.get("requiereOperario")),
             "instrucciones": (
-                "confirma que quedó movida, con el día COMPLETO y la hora tal "
-                "cual dice label; el link de la videollamada sigue siendo el "
-                "mismo salvo que aquí venga otro"
+                "decí estos números TAL CUAL, sin redondear ni recalcular. El "
+                "escalón te dice si se aplicó tarifa diaria, semanal o mensual "
+                "— si el lead pregunta por qué, explicáselo con eso. Si "
+                "requiere_operario es true, el operario no es opcional: va "
+                "siempre con la máquina."
+            ),
+        }
+
+    async def _resolve_offer(
+        self, args: dict[str, Any]
+    ) -> tuple[RentalOffer | None, dict[str, Any] | None]:
+        """La oferta elegida, o el error listo para devolverle al LLM.
+
+        Validación local por id exacto contra el espejo: es el freno barato
+        antes del viaje de red. El CRM vuelve a validar del otro lado y su
+        palabra manda.
+        """
+        wanted = str(args.get("oferta_id") or "").strip()
+        offered = await self._ctx.store.get_rental_offers(self._conv.id)
+        chosen = next((o for o in offered if o.offer_id == wanted), None)
+        if chosen is None:
+            logger.info(
+                "tools: reserva rechazada — %r no está entre las ofertas emitidas",
+                wanted[:60],
+            )
+            return None, {
+                "ok": False,
+                "error": "oferta_desconocida",
+                "detalle": (
+                    "solo podés reservar una oferta que este negocio te emitió "
+                    "en esta conversación. Si ninguna sirve, volvé a llamar "
+                    "consultar_disponibilidad con las fechas que quiere el lead"
+                ),
+                "ofertas_vigentes": _offers_for_llm(offered),
+            }
+        # Deja rastro de sobre qué frase del lead se tomó la decisión: cuando
+        # una reserva sale mal, esto dice si hubo confirmación o se asumió.
+        logger.info(
+            "tools: reserva de %s (el lead confirmó con: %r)",
+            chosen.label,
+            str(args.get("fechas_confirmadas") or "")[:120],
+        )
+        return chosen, None
+
+    async def _recovery(self, exc: RecentlyTaken) -> dict[str, Any]:
+        """Otro lead ganó la unidad: re-ofrecer sin cortar la conversación.
+
+        El CRM manda la salida en el mismo cuerpo — ofertas frescas de la
+        misma máquina y/o alternativas de la categoría. Se espeja lo que venga
+        y el modelo vuelve a ofrecer en ESTE mismo turno, sin esperar otro
+        mensaje del lead.
+        """
+        fresh = _offers_from_payload(self._conv.id, exc.ofertas)
+        await self._ctx.store.replace_rental_offers(self._conv.id, fresh)
+        logger.info(
+            "tools: carrera perdida — %d oferta(s) fresca(s), %d alternativa(s)",
+            len(fresh),
+            len(exc.alternativas),
+        )
+        if fresh:
+            return {
+                "ok": False,
+                "error": "recien_tomada",
+                "detalle": (
+                    "otro cliente tomó esa máquina hace un segundo. Discúlpate "
+                    "en una línea y ofrecé esta, que es la misma máquina en las "
+                    "mismas fechas y ya es reservable"
+                ),
+                "ofertas": _offers_for_llm(fresh),
+            }
+        if exc.alternativas:
+            return {
+                "ok": False,
+                "error": "recien_tomada",
+                "detalle": (
+                    "otro cliente tomó esa máquina hace un segundo y no queda "
+                    "otra igual. Discúlpate breve y ofrecele estas alternativas; "
+                    "si le interesa alguna, consultá su disponibilidad para "
+                    "poder reservarla"
+                ),
+                "alternativas": [
+                    {
+                        "modelo_id": a.get("modeloId"),
+                        "nombre": a.get("nombre"),
+                        "tarifa_diaria_referencia": _pesos(a.get("tarifaDiariaCents")),
+                    }
+                    for a in exc.alternativas
+                ],
+            }
+        return {
+            "ok": False,
+            "error": "recien_tomada",
+            "detalle": (
+                "otro cliente tomó esa máquina y no hay nada equivalente libre "
+                "en esas fechas. Decíselo con honestidad y ofrecé otras fechas "
+                "con consultar_disponibilidad, o hacé handoff"
+            ),
+        }
+
+    async def _crear_reserva(self, args: dict[str, Any]) -> dict[str, Any]:
+        chosen, error = await self._resolve_offer(args)
+        if error is not None or chosen is None:
+            return error or {"ok": False, "error": "oferta_desconocida"}
+        try:
+            result = await self._ctx.crm.create_rental(
+                self._crm_conv_id,
+                chosen.offer_id,
+                localidad_obra=str(args.get("localidad_obra") or "") or None,
+            )
+        except RecentlyTaken as exc:
+            return await self._recovery(exc)
+        except InventoryUnavailable:
+            return self._sin_inventario()
+        except CrmConflict as exc:
+            if exc.code == "oferta_vencida":
+                return {
+                    "ok": False,
+                    "error": "oferta_vencida",
+                    "detalle": (
+                        "esa oferta venció (son por tiempo limitado). Volvé a "
+                        "llamar consultar_disponibilidad con las mismas fechas y "
+                        "reservá con el oferta_id nuevo"
+                    ),
+                }
+            if exc.code == "oferta_desconocida":
+                offered = await self._ctx.store.get_rental_offers(self._conv.id)
+                return {
+                    "ok": False,
+                    "error": "oferta_desconocida",
+                    "detalle": (
+                        "el negocio no reconoce esa oferta; volvé a consultar "
+                        "disponibilidad antes de reservar"
+                    ),
+                    "ofertas_vigentes": _offers_for_llm(offered),
+                }
+            if exc.code == "ai_paused":
+                # Un humano tomó la conversación entre el contexto y la reserva.
+                return {
+                    "ok": False,
+                    "error": "ai_paused",
+                    "detalle": "un asesor tomó esta conversación; no sigas, ya está en manos de una persona",
+                }
+            raise
+
+        await self._ctx.store.clear_rental_offers(self._conv.id)
+        self.booked = True
+        reserva = result.get("reserva") or {}
+        try:
+            await self._ctx.crm.put_ficha(
+                self._crm_conv_id,
+                {
+                    "calificado": True,
+                    "resultado": "reservo",
+                    "maquina_interes": chosen.label,
+                },
+            )
+        except CrmError as exc:  # best-effort: la reserva ya existe
+            logger.warning("tools: no pude actualizar ficha tras reservar: %s", exc)
+        return {
+            "ok": True,
+            "etiqueta": chosen.label,
+            "desde": reserva.get("desde") or chosen.desde,
+            "hasta": reserva.get("hasta") or chosen.hasta,
+            "precio_total": _pesos(reserva.get("montoCotizadoCents") or chosen.amount_cents),
+            "estado": reserva.get("estado") or "tentativa",
+            "instrucciones": (
+                "quedó TOMADA, no confirmada. Decile exactamente eso: que se la "
+                "dejás tomada con la máquina, las fechas y el precio, y que un "
+                "asesor lo confirma a la brevedad. NUNCA digas 'confirmada', "
+                "'cerrada' ni 'reservada en firme'. Si después quiere cancelar o "
+                "cambiarla, eso lo ve una persona: hacé handoff."
+            ),
+        }
+
+    async def _cambiar_reserva(self, args: dict[str, Any]) -> dict[str, Any]:
+        chosen, error = await self._resolve_offer(args)
+        if error is not None or chosen is None:
+            return error or {"ok": False, "error": "oferta_desconocida"}
+        try:
+            result = await self._ctx.crm.move_rental(self._crm_conv_id, chosen.offer_id)
+        except RecentlyTaken as exc:
+            return await self._recovery(exc)
+        except InventoryUnavailable:
+            return self._sin_inventario()
+        except CrmConflict as exc:
+            if exc.code in ("sin_reserva", "reserva_inexistente"):
+                return {
+                    "ok": False,
+                    "error": "sin_reserva",
+                    "detalle": (
+                        "no hay ninguna reserva tomada que mover en esta "
+                        "conversación; usá crear_reserva_tentativa"
+                    ),
+                }
+            if exc.code == "oferta_vencida":
+                return {
+                    "ok": False,
+                    "error": "oferta_vencida",
+                    "detalle": (
+                        "esa oferta venció; volvé a llamar consultar_disponibilidad "
+                        "y movela con el oferta_id nuevo"
+                    ),
+                }
+            if exc.code == "ai_paused":
+                return {
+                    "ok": False,
+                    "error": "ai_paused",
+                    "detalle": "un asesor tomó esta conversación; no sigas",
+                }
+            raise
+
+        await self._ctx.store.clear_rental_offers(self._conv.id)
+        self.booked = True
+        reserva = result.get("reserva") or {}
+        return {
+            "ok": True,
+            "etiqueta": chosen.label,
+            "desde": reserva.get("desde") or chosen.desde,
+            "hasta": reserva.get("hasta") or chosen.hasta,
+            "precio_total": _pesos(
+                reserva.get("montoCotizadoCents") or chosen.amount_cents
+            ),
+            "estado": reserva.get("estado") or "tentativa",
+            "instrucciones": (
+                "quedó movida y sigue TOMADA, no confirmada. Confirmale la "
+                "máquina, las fechas nuevas y el precio, y repetí que un asesor "
+                "lo confirma. Nunca digas 'confirmada'."
             ),
         }
 
     async def _route_out(self) -> dict[str, Any]:
-        # "dio_diy" es el valor del enum `resultado` en el gateway del CRM
-        # (006); el nombre de la herramienta es genérico, el cable no cambia.
         await self._ctx.crm.put_ficha(
-            self._crm_conv_id, {"calificado": False, "resultado": "dio_diy"}
+            self._crm_conv_id, {"calificado": False, "resultado": "descartado"}
         )
         self.routed_out = True
         out: dict[str, Any] = {"ok": True}
         if self._profile.resources:
             out["recursos"] = self._profile.resources
-            out["instrucciones"] = "comparte estos recursos al despedirte, puerta abierta"
+            out["instrucciones"] = "compartí estos recursos al despedirte, puerta abierta"
         return out
 
     def _handoff(self, args: dict[str, Any]) -> dict[str, Any]:

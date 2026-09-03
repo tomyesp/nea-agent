@@ -65,6 +65,9 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                     settings.openai_api_key,
                     settings.openai_model,
                     transcribe_model=settings.openai_transcribe_model,
+                    # 017 — vacío = OpenAI; con valor, cualquier proveedor
+                    # compatible (OpenRouter).
+                    base_url=settings.openai_base_url or None,
                 ),
                 profile=ProfileProvider(
                     crm,
@@ -76,15 +79,17 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
         _wire_coalescer(c)
 
         if own_resources:
-            # ¿Este CRM agenda? Vocero trae el motor detrás de una bandera de
-            # despliegue y viene apagado por defecto. Se pregunta una vez, aquí,
-            # en vez de descubrirlo lead por lead: así el primero que escriba ya
-            # recibe el comportamiento correcto en vez de una promesa de cita
-            # que no se puede cumplir.
-            c.agenda_enabled = await c.crm.agenda_available()
+            # 017 — ¿Este CRM tiene catálogo de maquinaria? Vocero lo trae
+            # detrás de una bandera de despliegue y viene apagado por defecto.
+            # Se pregunta una vez, aquí, en vez de descubrirlo lead por lead:
+            # así el primero que escriba ya recibe el comportamiento correcto
+            # en vez de una promesa de máquina que no se puede cumplir.
+            c.inventory_enabled = await c.crm.inventory_available()
             logger.info(
-                "agenda del CRM: %s",
-                "disponible" if c.agenda_enabled else "APAGADA — Nea no ofrecerá citas",
+                "inventario del CRM: %s",
+                "disponible"
+                if c.inventory_enabled
+                else "APAGADO — Nea no ofrecerá máquinas",
             )
 
         relay_worker = RelayWorker(c.store, c.settings.crm_webhook_url, c.relay_wake)

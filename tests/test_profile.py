@@ -117,7 +117,7 @@ def _conv() -> Conversation:
 def test_prompt_compone_chasis_y_negocio():
     prof = profile_from_payload(PAYLOAD, default_name="Nea")
     system = build_system_prompt(profile=prof, context=None, conv=_conv())
-    assert "Eres Sofi" in system
+    assert "Sos Sofi" in system  # 017: el chasis habla en voseo
     assert "cálido y directo" in system
     assert "limpiezas dentales" in system
     assert "$800" in system
@@ -129,7 +129,7 @@ def test_prompt_compone_chasis_y_negocio():
 
 def test_prompt_minimo_advierte_falta_de_conocimiento():
     system = build_system_prompt(profile=BusinessProfile(), context=None, conv=_conv())
-    assert "Eres Nea" in system
+    assert "Sos Nea" in system
     assert "OJO: el negocio aún no configuró" in system
     assert "(sin entradas todavía)" in system
 

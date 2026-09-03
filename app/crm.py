@@ -6,14 +6,20 @@ Endpoints:
   POST /api/bot/messages   {conversationId, text}   → 409 ai_paused|window_closed
   PUT  /api/bot/ficha      {conversationId, ficha}
   POST /api/bot/handoff    {conversationId, reason}
-  GET  /api/bot/availability?conversationId=&limit=&perDay=&days=
-                                                    → huecos repartidos por día,
-                                                      REGISTRADOS como la oferta
-                                                      de esa conversación
-  POST /api/bot/bookings   {conversationId, startUtc} → 409 slot_taken + slots frescos
-  PATCH /api/bot/bookings  {conversationId, startUtc} → mueve la próxima cita
   GET  /api/bot/media/{mediaId}                       → binario + content-type
   POST /api/bot/reset      {conversationId}           → reinicio de pruebas (002)
+
+017 — inventario de maquinaria (detrás de la bandera INVENTARIO del CRM):
+  GET  /api/bot/catalogo?q=                           → modelos, specs y tarifas
+  GET  /api/bot/disponibilidad?conversationId=&modeloId=&desde=&hasta=
+                                                    → ofertas con ofertaId,
+                                                      REGISTRADAS contra esa
+                                                      conversación; o
+                                                      alternativas si no hay
+  POST /api/bot/cotizar    {modeloId, dias, conTraslado, km}  → desglose
+  POST /api/bot/reservas   {conversationId, ofertaId} → tentativa; 409
+                                                      recien_tomada + ofertas
+  PATCH /api/bot/reservas  {conversationId, ofertaId} → mueve la tentativa
 """
 from __future__ import annotations
 
@@ -38,42 +44,32 @@ class CrmConflict(CrmError):
         self.payload = payload or {}
 
 
-class AgendaUnavailable(CrmError):
-    """El CRM no tiene agenda (404 en `/api/bot/availability|bookings`).
+class InventoryUnavailable(CrmError):
+    """El CRM no tiene inventario (404 en `/api/bot/catalogo|disponibilidad|...`).
 
-    Vocero trae el motor de agendamiento detrás de una bandera de despliegue
-    (`AGENDA`) y viene APAGADA por defecto: en una instancia así esos endpoints
-    no existen. No es una caída ni un error de configuración de Nea — es una
-    capacidad que ese CRM no ofrece, y el agente tiene que dejar de prometer
-    citas en vez de reintentar contra una puerta que no está.
+    Vocero trae el motor de maquinaria detrás de una bandera de despliegue
+    (`INVENTARIO`) y viene APAGADA por defecto: en una instancia así esos
+    endpoints no existen. No es una caída ni un error de configuración de Nea
+    — es una capacidad que ese CRM no ofrece, y el agente tiene que dejar de
+    prometer máquinas en vez de reintentar contra una puerta que no está.
     """
 
 
-class ConflictWithSlots(CrmConflict):
-    """409 de agenda que viene con horarios para volver a ofrecer."""
+class RecentlyTaken(CrmConflict):
+    """017 — Otro lead ganó esa unidad entre la oferta y la reserva.
 
-    def __init__(self, code: str, payload: dict[str, Any] | None = None) -> None:
-        super().__init__(code, payload)
-        self.slots: list[dict[str, Any]] = list((payload or {}).get("slots") or [])
-
-
-class SlotTaken(ConflictWithSlots):
-    """El slot se ocupó entre oferta y confirmación; trae alternativas frescas."""
-
-    def __init__(self, payload: dict[str, Any] | None = None) -> None:
-        super().__init__("slot_taken", payload)
-
-
-class SlotNotOffered(ConflictWithSlots):
-    """El CRM no reconoce ese horario como ofrecido A ESTA conversación.
-
-    Desde que Vocero bajó la garantía "solo se reserva lo que se ofreció" a su
-    propio núcleo, la lista que manda aquí es la AUTORIDAD: si no coincide con
-    la que tiene Nea, la de Nea está vieja y hay que resincronizar con esta.
+    Lo corta el constraint de exclusión de Postgres, así que es una carrera
+    real y no un bug. Viene con salida en el mismo cuerpo: `ofertas` frescas
+    de la MISMA máquina (reservables ya) y/o `alternativas` de la categoría
+    (que hay que volver a consultar). Sin eso, la conversación se queda sin
+    salida y el lead se va.
     """
 
     def __init__(self, payload: dict[str, Any] | None = None) -> None:
-        super().__init__("slot_not_offered", payload)
+        super().__init__("recien_tomada", payload)
+        data = payload or {}
+        self.ofertas: list[dict[str, Any]] = list(data.get("ofertas") or [])
+        self.alternativas: list[dict[str, Any]] = list(data.get("alternativas") or [])
 
 
 def _payload(response: httpx.Response) -> dict[str, Any]:
@@ -99,14 +95,12 @@ def _conflict_code(response: httpx.Response) -> str:
     return str(payload.get("code") or "conflict")
 
 
-def _booking_conflict(response: httpx.Response) -> CrmConflict:
-    """409 de agenda: `slot_taken` viene con alternativas frescas adjuntas."""
+def _rental_conflict(response: httpx.Response) -> CrmConflict:
+    """409 de reservas: `recien_tomada` trae la salida adjunta."""
     payload = _payload(response)
     code = _conflict_code(response)
-    if code == "slot_taken":
-        return SlotTaken(payload)
-    if code == "slot_not_offered":
-        return SlotNotOffered(payload)
+    if code == "recien_tomada":
+        return RecentlyTaken(payload)
     return CrmConflict(code, payload)
 
 
@@ -211,102 +205,141 @@ class CrmClient:
         if resp.status_code != 200:
             raise CrmError(f"handoff devolvió {resp.status_code}")
 
-    async def get_availability(
-        self,
-        conversation_id: str,
-        limit: int = 6,
-        per_day: int | None = None,
-        days: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Huecos libres, y a la vez la OFERTA de esta conversación.
+    async def get_catalogo(self, q: str | None = None) -> dict[str, Any]:
+        """017 — Catálogo de máquinas: la única fuente de nombres y specs.
+
+        Lo que no esté acá el agente no puede nombrarlo. Trae la tarifa
+        vigente de cada modelo solo como referencia: el precio que se le dice
+        al lead sale SIEMPRE de `post_cotizar` o de la oferta.
+        """
+        params = {"q": q} if q else None
+        resp = await self._request("GET", "/api/bot/catalogo", params=params)
+        if resp.status_code == 404:
+            raise InventoryUnavailable("este CRM no tiene el motor de inventario")
+        if resp.status_code != 200:
+            raise CrmError(f"catalogo devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def get_disponibilidad(
+        self, conversation_id: str, model_id: str, desde: str, hasta: str
+    ) -> dict[str, Any]:
+        """Disponibilidad y, a la vez, la OFERTA de esta conversación.
 
         `conversationId` no es opcional: el CRM guarda contra esa conversación
-        exactamente lo que devuelve aquí, y después solo acepta reservar uno de
-        esos instantes. Pedir disponibilidad sin decir para quién es responde
-        422 — y esa era la causa de que Nea no pudiera agendar contra un Vocero
-        reciente.
-
-        Con `per_day` el CRM reparte los huecos entre días distintos (si no,
-        los primeros N se los come el día de hoy) y los devuelve con el día
-        desambiguado en `dayLabel`.
+        exactamente los `ofertaId` que devuelve acá, y después solo acepta
+        reservar uno de esos. Cuando no hay, la respuesta igual trae
+        `proximaFechaLibre` y `alternativas` reservables — nunca un "no hay"
+        seco, que es la forma más cara de perder un lead de anuncio.
         """
-        params: dict[str, Any] = {
-            "conversationId": conversation_id,
-            "limit": limit,
-        }
-        if per_day:
-            params["perDay"] = per_day
-        if days:
-            params["days"] = days
-        resp = await self._request("GET", "/api/bot/availability", params=params)
+        resp = await self._request(
+            "GET",
+            "/api/bot/disponibilidad",
+            params={
+                "conversationId": conversation_id,
+                "modeloId": model_id,
+                "desde": desde,
+                "hasta": hasta,
+            },
+        )
         if resp.status_code == 404:
-            raise AgendaUnavailable("este CRM no tiene el motor de agenda encendido")
+            # 404 con cuerpo = modelo desconocido; vacío = no hay inventario.
+            if _payload(resp):
+                raise CrmConflict("modelo_desconocido", _payload(resp))
+            raise InventoryUnavailable("este CRM no tiene el motor de inventario")
+        if resp.status_code == 409:
+            raise CrmConflict(_conflict_code(resp), _payload(resp))
         if resp.status_code != 200:
-            raise CrmError(f"availability devolvió {resp.status_code}")
-        slots = resp.json().get("slots") or []
-        return list(slots)
+            raise CrmError(f"disponibilidad devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
 
-    async def agenda_available(self) -> bool:
-        """¿Este CRM ofrece agenda?
+    async def inventory_available(self) -> bool:
+        """¿Este CRM ofrece inventario de maquinaria?
 
-        Se pregunta SIN `conversationId` a propósito: con la agenda encendida
-        el CRM responde 422 ("falta conversationId") y con ella apagada, 404.
-        Basta para distinguir, no ensucia la oferta de ninguna conversación y
-        no necesita un endpoint nuevo del CRM.
+        Se pregunta SIN parámetros a propósito: con el inventario encendido el
+        CRM responde 422 ("faltan modeloId, desde, hasta…") y con él apagado,
+        404. Basta para distinguir, no ensucia la oferta de ninguna
+        conversación y no necesita un endpoint nuevo.
 
-        Ante cualquier otra cosa (red caída, 5xx) se asume que SÍ hay agenda:
-        equivocarse hacia "sí" solo cuesta un intento fallido más adelante,
-        que ya degrada solo; equivocarse hacia "no" apagaría el agendamiento
-        de una instancia que sí lo tiene.
+        Ante cualquier otra cosa (red caída, 5xx) se asume que SÍ hay: fallar
+        hacia "sí" solo cuesta un intento que ya degrada solo; fallar hacia
+        "no" le apagaría el catálogo a una instancia que sí lo tiene.
         """
         try:
-            resp = await self._request("GET", "/api/bot/availability")
+            resp = await self._request("GET", "/api/bot/disponibilidad")
         except CrmError:
             return True
         return resp.status_code != 404
 
-    async def create_booking(
-        self, conversation_id: str, start_utc: str
+    async def post_cotizar(
+        self,
+        model_id: str,
+        dias: int,
+        con_traslado: bool = False,
+        km: float | None = None,
     ) -> dict[str, Any]:
-        resp = await self._request(
-            "POST",
-            "/api/bot/bookings",
-            json={"conversationId": conversation_id, "startUtc": start_utc},
-        )
-        if resp.status_code == 409:
-            raise _booking_conflict(resp)
+        """El desglose de precio. El agente NUNCA calcula ni redondea."""
+        body: dict[str, Any] = {
+            "modeloId": model_id,
+            "dias": dias,
+            "conTraslado": con_traslado,
+        }
+        if km is not None:
+            body["km"] = km
+        resp = await self._request("POST", "/api/bot/cotizar", json=body)
         if resp.status_code == 404:
-            raise AgendaUnavailable("este CRM no tiene el motor de agenda encendido")
-        # El CRM real responde 201 Created (REST); los mocks viejos daban 200.
-        if resp.status_code not in (200, 201):
-            raise CrmError(f"bookings devolvió {resp.status_code}")
+            if _payload(resp):
+                raise CrmConflict("modelo_desconocido", _payload(resp))
+            raise InventoryUnavailable("este CRM no tiene el motor de inventario")
+        if resp.status_code == 409:
+            raise CrmConflict(_conflict_code(resp), _payload(resp))
+        if resp.status_code != 200:
+            raise CrmError(f"cotizar devolvió {resp.status_code}")
         data: dict[str, Any] = resp.json()
         return data
 
-    async def reschedule_booking(
-        self, conversation_id: str, start_utc: str
+    async def create_rental(
+        self,
+        conversation_id: str,
+        offer_id: str,
+        localidad_obra: str | None = None,
+        con_traslado: bool | None = None,
     ) -> dict[str, Any]:
-        """Mueve la PRÓXIMA cita activa del lead a otro horario ofrecido.
+        """Reserva TENTATIVA. Confirmarla es cosa de un humano en el CRM."""
+        body: dict[str, Any] = {
+            "conversationId": conversation_id,
+            "ofertaId": offer_id,
+        }
+        if localidad_obra:
+            body["localidadObra"] = localidad_obra
+        if con_traslado is not None:
+            body["conTraslado"] = con_traslado
+        resp = await self._request("POST", "/api/bot/reservas", json=body)
+        if resp.status_code == 409:
+            raise _rental_conflict(resp)
+        if resp.status_code == 404:
+            raise InventoryUnavailable("este CRM no tiene el motor de inventario")
+        if resp.status_code not in (200, 201):
+            raise CrmError(f"reservas devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
 
-        Antes esto no existía y el agente tenía que hacer handoff: la IA se
-        pausaba y el lead quedaba sin nadie del otro lado.
-        """
+    async def move_rental(self, conversation_id: str, offer_id: str) -> dict[str, Any]:
+        """Mueve la tentativa de esta conversación a otra oferta emitida."""
         resp = await self._request(
             "PATCH",
-            "/api/bot/bookings",
-            json={"conversationId": conversation_id, "startUtc": start_utc},
+            "/api/bot/reservas",
+            json={"conversationId": conversation_id, "ofertaId": offer_id},
         )
         if resp.status_code == 409:
-            raise _booking_conflict(resp)
+            raise _rental_conflict(resp)
         if resp.status_code == 404:
-            # Ojo con este 404: puede ser "no hay cita que mover" (agenda
-            # encendida) o "aquí no hay agenda". Los distingue el cuerpo: el
-            # primero trae el sobre de error del CRM; el segundo viene vacío.
             if _payload(resp):
-                raise CrmConflict("no_booking", _payload(resp))
-            raise AgendaUnavailable("este CRM no tiene el motor de agenda encendido")
+                raise CrmConflict("sin_reserva", _payload(resp))
+            raise InventoryUnavailable("este CRM no tiene el motor de inventario")
         if resp.status_code != 200:
-            raise CrmError(f"reschedule devolvió {resp.status_code}")
+            raise CrmError(f"mover reserva devolvió {resp.status_code}")
         data: dict[str, Any] = resp.json()
         return data
 

@@ -50,11 +50,24 @@ class BotMessage:
 
 
 @dataclass
-class OfferedSlot:
+class RentalOffer:
+    """017 — Espejo local de una oferta de alquiler emitida por el CRM.
+
+    El `offer_id` es lo ÚNICO reservable: lo emite Vocero contra esta
+    conversación y solo él lo acepta de vuelta. Igual que el espejo de
+    horarios que reemplaza, esto NO es una segunda fuente de verdad — sirve
+    para etiquetar bonito y para frenar una alucinación antes de gastar un
+    viaje de red. Si el CRM rechaza un `offer_id`, su palabra manda.
+    """
+
     conversation_id: int
-    start_utc: datetime
-    end_utc: datetime | None
+    offer_id: str
+    model_id: str
     label: str
+    desde: str  # ISO date "2026-10-05", tal cual la ofreció el CRM
+    hasta: str
+    amount_cents: int
+    expires_at: datetime | None = None
     offered_at: datetime = field(default_factory=utcnow)
 
 
@@ -146,12 +159,12 @@ class Store(Protocol):
         self, conversation_id: int, limit: int
     ) -> list[BotMessage]: ...
 
-    # slots ofrecidos
-    async def replace_offered_slots(
-        self, conversation_id: int, slots: list[OfferedSlot]
+    # ofertas de alquiler emitidas por el CRM (espejo)
+    async def replace_rental_offers(
+        self, conversation_id: int, offers: list[RentalOffer]
     ) -> None: ...
-    async def get_offered_slots(self, conversation_id: int) -> list[OfferedSlot]: ...
-    async def clear_offered_slots(self, conversation_id: int) -> None: ...
+    async def get_rental_offers(self, conversation_id: int) -> list[RentalOffer]: ...
+    async def clear_rental_offers(self, conversation_id: int) -> None: ...
 
     # cola de envíos pendientes (respuestas que no pudieron salir en el turno)
     async def enqueue_pending_send(
@@ -187,7 +200,7 @@ class MemoryStore:
         self.conversations: dict[int, Conversation] = {}
         self._conv_by_identity: dict[str, int] = {}
         self.messages: list[BotMessage] = []
-        self.offered: dict[int, list[OfferedSlot]] = {}
+        self.offered: dict[int, list[RentalOffer]] = {}
         self.pending_sends: dict[int, PendingSend] = {}
 
     async def mark_processed(self, wa_message_id: str) -> bool:
@@ -276,15 +289,15 @@ class MemoryStore:
         msgs = [m for m in self.messages if m.conversation_id == conversation_id]
         return msgs[-limit:]
 
-    async def replace_offered_slots(
-        self, conversation_id: int, slots: list[OfferedSlot]
+    async def replace_rental_offers(
+        self, conversation_id: int, offers: list[RentalOffer]
     ) -> None:
-        self.offered[conversation_id] = list(slots)
+        self.offered[conversation_id] = list(offers)
 
-    async def get_offered_slots(self, conversation_id: int) -> list[OfferedSlot]:
+    async def get_rental_offers(self, conversation_id: int) -> list[RentalOffer]:
         return list(self.offered.get(conversation_id, []))
 
-    async def clear_offered_slots(self, conversation_id: int) -> None:
+    async def clear_rental_offers(self, conversation_id: int) -> None:
         self.offered.pop(conversation_id, None)
 
     async def enqueue_pending_send(
@@ -356,11 +369,11 @@ class AppContext:
     profile: Any | None = None  # ProfileProvider; None en tests = perfil mínimo
     coalescer: Any | None = None
     relay_wake: asyncio.Event = field(default_factory=asyncio.Event)
-    # ¿El CRM de esta instancia tiene motor de agenda? Vocero lo trae detrás de
-    # una bandera de despliegue y viene apagado por defecto. Se resuelve al
-    # arrancar (y se corrige solo si en caliente resulta que no está), para no
-    # ofrecerle horarios a un lead contra un CRM que no puede agendarlos.
-    agenda_enabled: bool = True
+    # 017 — ¿El CRM de esta instancia tiene motor de inventario? Vocero lo trae
+    # detrás de la bandera INVENTARIO y viene apagado por defecto. Se resuelve
+    # al arrancar (y se corrige solo si en caliente resulta que no está), para
+    # no ofrecerle máquinas a un lead contra un CRM que no puede reservarlas.
+    inventory_enabled: bool = True
     # Un candado por identidad: los turnos de UNA conversación se serializan.
     # Sin esto, una ráfaga que llega mientras el turno anterior sigue en vuelo
     # abre un segundo turno con contexto viejo (se reservó una cita antes de

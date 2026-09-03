@@ -11,7 +11,7 @@ from typing import Any
 
 import asyncpg
 
-from app.state import BotMessage, Conversation, OfferedSlot, PendingSend, RelayItem
+from app.state import BotMessage, Conversation, PendingSend, RelayItem, RentalOffer
 
 logger = logging.getLogger("nea.db")
 
@@ -171,7 +171,7 @@ class PgStore:
                     conversation_id,
                 )
                 await conn.execute(
-                    "DELETE FROM offered_slots WHERE conversation_id = $1",
+                    "DELETE FROM rental_offers WHERE conversation_id = $1",
                     conversation_id,
                 )
                 await conn.execute(
@@ -229,48 +229,56 @@ class PgStore:
             for r in reversed(rows)
         ]
 
-    # -------------------------------------------------------------- slots ---
+    # ------------------------------------------- ofertas de alquiler (017) ---
 
-    async def replace_offered_slots(
-        self, conversation_id: int, slots: list[OfferedSlot]
+    async def replace_rental_offers(
+        self, conversation_id: int, offers: list[RentalOffer]
     ) -> None:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "DELETE FROM offered_slots WHERE conversation_id = $1",
+                    "DELETE FROM rental_offers WHERE conversation_id = $1",
                     conversation_id,
                 )
-                for slot in slots:
+                for offer in offers:
                     await conn.execute(
                         """
-                        INSERT INTO offered_slots (conversation_id, start_utc, end_utc, label)
-                        VALUES ($1, $2, $3, $4)
+                        INSERT INTO rental_offers
+                          (conversation_id, offer_id, model_id, label, desde,
+                           hasta, amount_cents)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """,
                         conversation_id,
-                        slot.start_utc,
-                        slot.end_utc,
-                        slot.label,
+                        offer.offer_id,
+                        offer.model_id,
+                        offer.label,
+                        offer.desde,
+                        offer.hasta,
+                        offer.amount_cents,
                     )
 
-    async def get_offered_slots(self, conversation_id: int) -> list[OfferedSlot]:
+    async def get_rental_offers(self, conversation_id: int) -> list[RentalOffer]:
         rows = await self.pool.fetch(
-            "SELECT * FROM offered_slots WHERE conversation_id = $1 ORDER BY start_utc",
+            "SELECT * FROM rental_offers WHERE conversation_id = $1 ORDER BY id",
             conversation_id,
         )
         return [
-            OfferedSlot(
+            RentalOffer(
                 conversation_id=r["conversation_id"],
-                start_utc=r["start_utc"],
-                end_utc=r["end_utc"],
+                offer_id=r["offer_id"],
+                model_id=r["model_id"],
                 label=r["label"],
+                desde=r["desde"],
+                hasta=r["hasta"],
+                amount_cents=r["amount_cents"],
                 offered_at=r["offered_at"],
             )
             for r in rows
         ]
 
-    async def clear_offered_slots(self, conversation_id: int) -> None:
+    async def clear_rental_offers(self, conversation_id: int) -> None:
         await self.pool.execute(
-            "DELETE FROM offered_slots WHERE conversation_id = $1", conversation_id
+            "DELETE FROM rental_offers WHERE conversation_id = $1", conversation_id
         )
 
     # ------------------------------------------------- envíos pendientes ---
