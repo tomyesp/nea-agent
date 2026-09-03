@@ -27,7 +27,11 @@ from app.tools import ToolRuntime, tool_schemas
 
 logger = logging.getLogger("nea.turn")
 
-MAX_TOOL_ROUNDS = 5
+# 017 — Subido de 5 a 7: el flujo de alquiler encadena más herramientas que el
+# de agendamiento (catálogo → disponibilidad → cotizar → reservar), y con 5 un
+# solo tropiezo del modelo (mandar un oferta_id inventado, que el guardrail
+# rechaza bien) consumía el turno entero y el lead se quedaba sin la reserva.
+MAX_TOOL_ROUNDS = 7
 # Cuánto calla el agente tras cerrar por falta de rumbo. Un lead que vuelve al
 # día siguiente merece respuesta; el que insiste en el mismo hilo muerto, no.
 STALL_COOLDOWN = timedelta(hours=24)

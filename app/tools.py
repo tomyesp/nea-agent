@@ -166,7 +166,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Nunca los calcules, los estimes, los redondees ni los "
                 "'aproximes' vos — ni siquiera si el lead te apura o si te "
                 "parece obvio multiplicar la diaria por los días (el negocio "
-                "tiene escalones semanales y mensuales que no son eso)."
+                "tiene escalones semanales y mensuales que no son eso).\n"
+                "OJO: cotizar NO chequea si la máquina está libre y NO emite "
+                "ninguna oferta reservable. Si el lead va a avanzar con esas "
+                "fechas, necesitás consultar_disponibilidad igual."
             ),
             "parameters": {
                 "type": "object",
@@ -364,6 +367,12 @@ def _offers_from_payload(
 def _offers_for_llm(offers: list[RentalOffer]) -> list[dict[str, Any]]:
     return [
         {
+            # `opcion` existe porque los modelos chicos NO copian un nanoid
+            # opaco: mandan "1" o "oferta_id_1" y la reserva se caía. El número
+            # es una forma de DIRECCIONAR una oferta ya emitida, no un permiso
+            # nuevo: se resuelve contra este mismo espejo, así que la garantía
+            # ("solo se reserva lo que el servidor ofreció") no se toca.
+            "opcion": i,
             "oferta_id": o.offer_id,
             "modelo_id": o.model_id,
             "etiqueta": o.label,
@@ -371,8 +380,39 @@ def _offers_for_llm(offers: list[RentalOffer]) -> list[dict[str, Any]]:
             "hasta": o.hasta,
             "precio_total": _pesos(o.amount_cents),
         }
-        for o in offers
+        for i, o in enumerate(offers, start=1)
     ]
+
+
+def _match_offer(
+    wanted: str, offered: list[RentalOffer]
+) -> RentalOffer | None:
+    """La oferta que el modelo quiso nombrar, o None.
+
+    Acepta el `oferta_id` exacto (lo correcto) y, como red de seguridad, el
+    número de opción tal como se le mostró ("2", "opcion 2", "oferta_id_2").
+    Todo se resuelve contra las ofertas EMITIDAS en esta conversación: nunca
+    se acepta algo que el servidor no ofreció.
+    """
+    w = wanted.strip()
+    if not w:
+        return None
+    exact = next((o for o in offered if o.offer_id == w), None)
+    if exact is not None:
+        return exact
+    # Solo se cae al número si NO parece un id real (los ids del CRM traen
+    # prefijo): así un id viejo o de otra conversación sigue siendo rechazo.
+    digits = "".join(ch for ch in w if ch.isdigit())
+    if digits and not w.startswith("roff_") and len(digits) <= 2:
+        idx = int(digits)
+        if 1 <= idx <= len(offered):
+            logger.info(
+                "tools: el modelo direccionó la oferta por número (%r → %s)",
+                w,
+                offered[idx - 1].offer_id,
+            )
+            return offered[idx - 1]
+    return None
 
 
 class ToolRuntime:
@@ -631,7 +671,11 @@ class ToolRuntime:
                 "escalón te dice si se aplicó tarifa diaria, semanal o mensual "
                 "— si el lead pregunta por qué, explicáselo con eso. Si "
                 "requiere_operario es true, el operario no es opcional: va "
-                "siempre con la máquina."
+                "siempre con la máquina.\n"
+                "ESTO NO RESERVÓ NADA ni verificó que la máquina esté libre. "
+                "Si le vas a ofrecer tomarla en esas fechas, llamá AHORA "
+                "consultar_disponibilidad: sin eso no hay oferta y después no "
+                "vas a poder reservarle nada."
             ),
         }
 
@@ -646,21 +690,36 @@ class ToolRuntime:
         """
         wanted = str(args.get("oferta_id") or "").strip()
         offered = await self._ctx.store.get_rental_offers(self._conv.id)
-        chosen = next((o for o in offered if o.offer_id == wanted), None)
+        chosen = _match_offer(wanted, offered)
         if chosen is None:
             logger.info(
                 "tools: reserva rechazada — %r no está entre las ofertas emitidas",
                 wanted[:60],
             )
+            # El detalle es MUY concreto a propósito: cuando el modelo manda un
+            # placeholder ("oferta_id_1") y solo se le dice "id inválido", se va
+            # a re-consultar disponibilidad y quema las rondas del turno. Acá se
+            # le dice qué copiar y de dónde.
+            vigentes = _offers_for_llm(offered)
+            if vigentes:
+                detalle = (
+                    "ese oferta_id no existe. NO inventes ids ni uses "
+                    "placeholders: copiá TAL CUAL uno de los `oferta_id` que "
+                    "vienen en `ofertas_vigentes` acá abajo y volvé a llamar "
+                    "crear_reserva_tentativa con ese, en este mismo turno. No "
+                    "hace falta volver a consultar disponibilidad."
+                )
+            else:
+                detalle = (
+                    "no hay ninguna oferta vigente en esta conversación: llamá "
+                    "consultar_disponibilidad con las fechas que pidió el lead "
+                    "y reservá con el oferta_id que te devuelva"
+                )
             return None, {
                 "ok": False,
                 "error": "oferta_desconocida",
-                "detalle": (
-                    "solo podés reservar una oferta que este negocio te emitió "
-                    "en esta conversación. Si ninguna sirve, volvé a llamar "
-                    "consultar_disponibilidad con las fechas que quiere el lead"
-                ),
-                "ofertas_vigentes": _offers_for_llm(offered),
+                "detalle": detalle,
+                "ofertas_vigentes": vigentes,
             }
         # Deja rastro de sobre qué frase del lead se tomó la decisión: cuando
         # una reserva sale mal, esto dice si hubo confirmación o se asumió.

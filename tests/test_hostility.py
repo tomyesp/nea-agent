@@ -63,15 +63,29 @@ def test_agresion_dirigida_argentina_cuenta():
         assert is_hostile(texto), texto
 
 
-def test_identidad_argentina_canonicaliza_el_9_de_movil():
-    """Meta reporta 549XXXXXXXXXX; el mismo número se carga sin el 9 y la
-    allowlist no matcheaba."""
-    assert canonical_identity("5493511234567") == "543511234567"
-    assert canonical_identity("543511234567") == "543511234567"
+def test_identidad_argentina_NO_se_toca_para_hablar_con_el_crm():
+    """017 — El CRM guarda el número tal cual lo manda Meta (solo normaliza
+    México). Si Nea le sacara el 9, pediría el contexto con una identidad que
+    el CRM no conoce y devolvería 404: el lead quedaría mudo. Se cazó en vivo
+    en la primera prueba end-to-end."""
+    assert canonical_identity("5493511234567") == "5493511234567"
     # El caso mexicano del upstream sigue funcionando.
     assert canonical_identity("5215512345678") == "525512345678"
     # Un BSUID pasa tal cual.
     assert canonical_identity("bsuid:abc123") == "bsuid:abc123"
+
+
+def test_la_allowlist_si_tolera_el_9_de_movil():
+    """La tolerancia vive donde es inofensiva: comparar contra listas locales."""
+    from app.config import Settings
+
+    s = Settings(allowed_wa_ids="543511234567")
+    # El dueño la cargó sin el 9 y Meta manda con el 9: igual entra.
+    assert canonical_identity("5493511234567") in s.allowed_identities
+    assert canonical_identity("543511234567") in s.allowed_identities
+
+    s2 = Settings(allowed_wa_ids="5493511234567")  # y al revés
+    assert canonical_identity("543511234567") in s2.allowed_identities
 
 
 def test_racha_se_corta_si_el_lead_se_calma():

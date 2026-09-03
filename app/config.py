@@ -10,23 +10,44 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def canonical_identity(wa_id: str) -> str:
-    """Canonicaliza una identidad de WhatsApp para comparaciones.
+    """Canonicaliza una identidad de WhatsApp, IGUAL que el CRM.
 
-    Argentina (017): Meta reporta el móvil como `549XXXXXXXXXX` (el "9" de
-    móvil) pero el mismo número se escribe también sin el 9 — son la misma
-    persona, y una allowlist cargada de una forma no matcheaba la otra.
+    Esta función tiene que coincidir con `normalizeMx` de Vocero, porque la
+    identidad que sale de acá es la llave con la que se le pide el contexto al
+    CRM: si Nea normaliza distinto, el CRM devuelve 404 y el lead queda sin
+    respuesta.
 
-    México (upstream): `521XXXXXXXXXX` ↔ `52XXXXXXXXXX`, mismo caso. Se
-    conserva porque no estorba y el upstream lo prueba.
+    México: Meta a veces reporta `521XXXXXXXXXX` (13 dígitos con el "1" de
+    móvil) y a veces `52XXXXXXXXXX` — son la misma persona.
+
+    017 — Argentina: acá NO se toca el "9" de móvil (`549…`). Vocero guarda el
+    número tal cual lo manda Meta, así que quitárselo rompía el match contra el
+    CRM. La tolerancia al 9 vive donde sí es inofensiva: en la allowlist
+    (ver `_identities`).
 
     Los BSUID y otros identificadores pasan tal cual.
     """
     s = wa_id.strip()
-    if s.startswith("549") and len(s) == 13 and s.isdigit():
-        return "54" + s[3:]
     if s.startswith("521") and len(s) == 13 and s.isdigit():
         return "52" + s[3:]
     return s
+
+
+def identity_variants(wa_id: str) -> set[str]:
+    """Las formas en que la MISMA persona puede aparecer escrita.
+
+    Solo para comparar contra listas locales (allowlist, testers): nunca para
+    hablar con el CRM. En Argentina el mismo móvil se escribe `5493511234567`
+    o `543511234567`; que el dueño cargue una y Meta mande la otra no puede
+    dejar al bot mudo.
+    """
+    base = canonical_identity(wa_id)
+    out = {base}
+    if base.startswith("549") and len(base) == 13 and base.isdigit():
+        out.add("54" + base[3:])
+    elif base.startswith("54") and len(base) == 12 and base.isdigit():
+        out.add("549" + base[2:])
+    return out
 
 
 class Settings(BaseSettings):
@@ -86,9 +107,13 @@ class Settings(BaseSettings):
 
     @staticmethod
     def _identities(csv: str) -> frozenset[str]:
-        return frozenset(
-            canonical_identity(part) for part in csv.split(",") if part.strip()
-        )
+        """Cada entrada se expande a sus variantes (017): así da igual si el
+        dueño cargó el móvil argentino con el 9 o sin él."""
+        out: set[str] = set()
+        for part in csv.split(","):
+            if part.strip():
+                out |= identity_variants(part)
+        return frozenset(out)
 
     @property
     def allowed_identities(self) -> frozenset[str]:

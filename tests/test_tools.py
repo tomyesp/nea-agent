@@ -253,6 +253,44 @@ async def test_reserva_rechaza_oferta_no_emitida_sin_tocar_el_crm(
     assert result["ofertas_vigentes"][0]["oferta_id"] == OFERTA_ID
 
 
+async def test_reserva_por_numero_de_opcion(runtime_y_ctx, respx_mock):
+    """Los modelos chicos no copian un nanoid opaco: mandan "1". Direccionar
+    por número resuelve contra el MISMO espejo, así que no afloja la garantía:
+    sigue siendo imposible reservar algo que el servidor no ofreció."""
+    runtime, ctx, conv = runtime_y_ctx
+    reservas = respx_mock.post(f"{CRM_URL}/api/bot/reservas").mock(
+        return_value=httpx.Response(201, json={"reserva": {"estado": "tentativa"}})
+    )
+    respx_mock.put(f"{CRM_URL}/api/bot/ficha").mock(
+        return_value=httpx.Response(200, json={"ficha": {}})
+    )
+    result = await runtime.execute(
+        "crear_reserva_tentativa",
+        {"oferta_id": "1", "fechas_confirmadas": "dale esa"},
+    )
+    assert result["ok"] is True
+    # Al CRM viaja el id REAL, no el número.
+    assert json.loads(reservas.calls[0].request.content)["ofertaId"] == OFERTA_ID
+
+
+async def test_un_id_con_pinta_de_real_pero_ajeno_sigue_rechazado(
+    runtime_y_ctx, respx_mock
+):
+    """El atajo por número no puede volverse una puerta: un roff_ inventado
+    se rechaza igual que antes."""
+    runtime, ctx, conv = runtime_y_ctx
+    reservas = respx_mock.post(f"{CRM_URL}/api/bot/reservas").mock(
+        return_value=httpx.Response(201, json={"reserva": {}})
+    )
+    for fake in ("roff_otra_conversacion", "roff_9", "99"):
+        result = await runtime.execute(
+            "crear_reserva_tentativa",
+            {"oferta_id": fake, "fechas_confirmadas": "dale"},
+        )
+        assert result["error"] == "oferta_desconocida", fake
+    assert reservas.call_count == 0
+
+
 async def test_reserva_con_oferta_emitida_queda_tentativa(runtime_y_ctx, respx_mock):
     runtime, ctx, conv = runtime_y_ctx
     reservas = respx_mock.post(f"{CRM_URL}/api/bot/reservas").mock(
