@@ -64,7 +64,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                 llm=OpenAiLlm(
                     settings.openai_api_key,
                     settings.openai_model,
-                    transcribe_model=settings.openai_transcribe_model,
+                    audio_model=settings.audio_model,
                     # 017 — vacío = OpenAI; con valor, cualquier proveedor
                     # compatible (OpenRouter).
                     base_url=settings.openai_base_url or None,

@@ -56,7 +56,11 @@ class Settings(BaseSettings):
     # proveedor degrada honesta (el agente dice que no pudo escuchar el audio).
     openai_base_url: str = ""
     openai_model: str = "gpt-4o-mini"
-    openai_transcribe_model: str = "whisper-1"  # notas de voz → texto
+    # 017 — Modelo que ESCUCHA las notas de voz. Por defecto uno que oye audio
+    # nativo por chat, así OpenRouter alcanza para todo. Si acá se pone un
+    # modelo de transcripción (whisper-1), se usa la API de OpenAI, que exige
+    # una key de OpenAI de verdad.
+    audio_model: str = "google/gemini-2.5-flash-lite"
     history_window: int = 10
 
     # Guardarraíles y tiempos
