@@ -50,7 +50,14 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   una **tentativa** que confirma un humano en el CRM. Cualquier cambio de
   prompt que toque esto re-corre el self-test de comportamiento.
 - **Descuentos, facturación, seguros y plazos largos son handoff.** No los
-  negocia el agente: inventar ahí cuesta plata real.
+  negocia el agente: inventar ahí cuesta plata real. Desde 017 Fase 7 el
+  handoff NO depende de que el modelo llame la herramienta: `app/escalation.py`
+  detecta el pedido en el mensaje del LEAD y `turn.py` lo garantiza, igual que
+  el contador de hostilidad. El Laboratorio lo pidió: el agente escribía "eso
+  lo ve un asesor" y seguía vendiendo, así que el dueño nunca se enteraba.
+  El detector mira al lead y NO a la respuesta del agente a propósito: "un
+  asesor te confirma la reserva" (venta correcta) y "eso lo ve un asesor"
+  (escalada) se parecen demasiado para distinguirlas por texto generado.
 - **El inventario puede no existir.** En Vocero va detrás de la bandera
   `INVENTARIO`, apagada por defecto: esos endpoints responden 404. Se sondea al
   arrancar (`crm.inventory_available()`); sin inventario no se le enseñan al

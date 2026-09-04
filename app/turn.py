@@ -18,7 +18,8 @@ from zoneinfo import ZoneInfo
 from app import media
 from app.config import canonical_identity
 from app.format import to_whatsapp
-from app.crm import CrmConflict, CrmError
+from app.crm import CrmConflict, CrmError, canonical_handoff_reason
+from app.escalation import alert_for, needs_human
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import LlmExhausted
 from app.stall import ALERTA as STALL_ALERT, racha_vacia, sin_rumbo
@@ -255,6 +256,17 @@ async def run_turn(
     streak = hostile_streak([m.content for m in history if m.role == "user"])
     if streak >= 3:
         messages.append({"role": "system", "content": HOSTILITY_ALERT})
+    # 017 Fase 7 (bis) — Pedidos que NO decide el agente (descuento,
+    # facturación, seguro, reclamo por un alquiler anterior). El chasis ya se
+    # lo pide; el Laboratorio mostró que escribe "eso lo ve un asesor" y sigue
+    # vendiendo sin llamar la herramienta, así que el dueño nunca se entera y
+    # el lead espera una respuesta que no llega. Misma receta que arriba:
+    # alerta en el turno + handoff garantizado más abajo.
+    escalar = needs_human(user_text)
+    if escalar is not None:
+        logger.info("turno %s: el lead pide algo que decide una persona (%s)",
+                    identity, escalar)
+        messages.append({"role": "system", "content": alert_for(escalar)})
     # Candado de cierre: conversación que no va a ningún lado. Se despide con
     # UNA línea cálida en este turno y después calla (gate 1.5). El conteo es
     # determinista aquí; el LLM solo pone la redacción.
@@ -298,6 +310,18 @@ async def run_turn(
     # llamado el modelo o no (la regla de negocio no depende de su humor).
     if streak >= 3 and runtime.handoff_reason is None:
         runtime.handoff_reason = "hostilidad"
+    # Ídem para lo que el agente no decide, y SIEMPRE con el mismo motivo lo
+    # haya llamado el modelo o no: si no, la misma situación le aparece al
+    # dueño etiquetada `cliente` unas veces y `modelo` otras, según el humor
+    # del turno. `cliente` porque lo que pasó es que el LEAD pidió algo que
+    # necesita una persona — no que la IA dudó.
+    # La hostilidad gana: de las dos señales es la que el dueño necesita ver
+    # primero.
+    if escalar is not None and canonical_handoff_reason(runtime.handoff_reason) != "hostilidad":
+        if runtime.handoff_reason is None:
+            logger.info("turno %s: handoff por %s (backstop, el modelo no lo llamó)",
+                        identity, escalar)
+        runtime.handoff_reason = "cliente"
 
     # --- Enviar la respuesta (SIEMPRE vía el CRM, nunca Meta directo) -----
     # Fase 7 — Última parada antes del lead: el Markdown que el modelo escribe
