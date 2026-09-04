@@ -10,12 +10,14 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, AsyncIterator
 from zoneinfo import ZoneInfo
 
 from app import media
 from app.config import canonical_identity
+from app.format import to_whatsapp
 from app.crm import CrmConflict, CrmError
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import LlmExhausted
@@ -42,6 +44,24 @@ CONTEXT_ATTEMPTS = 3  # el relay puede tardar un instante en aterrizar en el CRM
 # Comando de pruebas: reinicia la memoria de ESA conversación. Disponible SOLO
 # para identidades de TESTER_WA_IDS (vacía = comando apagado).
 RESET_COMMANDS = frozenset({"/reset", "#reset"})
+
+
+@dataclass
+class TurnResult:
+    """Qué pasó en el turno. En producción nadie lo mira (handle_flush lo
+    descarta); lo consume el Laboratorio (Fase 7), que necesita distinguir
+    "el agente eligió callarse" de "el turno se rompió".
+
+    `silencio` nombra el motivo cuando no hubo respuesta: sin él, un turno mudo
+    por ventana cerrada y uno mudo por excepción se ven idénticos en el reporte
+    y el juez termina castigando al agente por hacer lo correcto.
+    """
+
+    reply: str | None = None
+    sent: bool = False
+    handoff: str | None = None
+    silencio: str | None = None
+    tools: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _agent_tz(settings: Any) -> ZoneInfo:
@@ -99,17 +119,33 @@ async def handle_flush(ctx: AppContext, identity: str, items: list[Any]) -> None
 
 
 async def run_turn(
-    ctx: AppContext, identity: str, inbound: list[InboundMessage]
-) -> None:
+    ctx: AppContext,
+    identity: str,
+    inbound: list[InboundMessage],
+    *,
+    lab_conversation_id: str | None = None,
+    trace: list[dict[str, Any]] | None = None,
+) -> TurnResult:
+    """Un turno completo.
+
+    `lab_conversation_id` lo pasa SOLO el Laboratorio (Fase 7): fija contra qué
+    conversación del CRM corre el turno en vez de resolverla por identidad. El
+    CRM se niega a resolver conversaciones de prueba por identidad — este
+    camino es explícito justamente para que no se abra solo en producción.
+    """
     settings = ctx.settings
+    lab = lab_conversation_id is not None
 
     # --- Gate 1: allowlist de pruebas (Constitución V) --------------------
+    # El Laboratorio no pasa por acá: sus personas tienen teléfonos sintéticos
+    # que nunca van a estar en ALLOWED_WA_IDS, y su autorización es otra — la
+    # API key con la que el CRM abrió el turno.
     allowed = settings.allowed_identities
-    if allowed and canonical_identity(identity) not in allowed:
+    if not lab and allowed and canonical_identity(identity) not in allowed:
         logger.info(
             "allowlist: %s fuera de ALLOWED_WA_IDS — relay sí, respuesta no", identity
         )
-        return
+        return TurnResult(silencio="allowlist")
 
     conv = await ctx.store.get_or_create_conversation(identity)
 
@@ -120,7 +156,7 @@ async def run_turn(
         (m.text or "").strip().lower() in RESET_COMMANDS for m in inbound
     ):
         await _run_reset(ctx, conv, identity)
-        return
+        return TurnResult(silencio="reset")
 
     # --- Gate 1.5: conversación ya cerrada por no ir a ningún lado --------
     # El agente ya se despidió amable; seguir contestando es perseguir. Se
@@ -132,7 +168,7 @@ async def run_turn(
                 "turno %s: conversación cerrada por falta de rumbo — silencio",
                 identity,
             )
-            return
+            return TurnResult(silencio="sin_rumbo")
         logger.info(
             "turno %s: el lead volvió tras el enfriamiento — reabro", identity
         )
@@ -140,21 +176,21 @@ async def run_turn(
         conv.stalled_at = None
 
     # --- Gate 2: contexto del CRM (aiEnabled, ventana) --------------------
-    context = await _fetch_context(ctx, identity)
+    context = await _fetch_context(ctx, identity, lab_conversation_id)
     if context is None:
         logger.warning("turno %s: sin contexto del CRM — silencio", identity)
-        return
+        return TurnResult(silencio="sin_contexto")
     conversation_info = context.get("conversation") or {}
     crm_conv_id = conversation_info.get("id")
     if not crm_conv_id:
         logger.warning("turno %s: contexto sin conversationId — silencio", identity)
-        return
+        return TurnResult(silencio="sin_contexto")
     if not conversation_info.get("aiEnabled", False):
         logger.info("turno %s: aiEnabled=false (handoff activo) — silencio", identity)
-        return
+        return TurnResult(silencio="ia_pausada")
     if not conversation_info.get("windowOpen", False):
         logger.info("turno %s: ventana de 24 h cerrada — silencio", identity)
-        return
+        return TurnResult(silencio="ventana_cerrada")
 
     await ctx.store.update_conversation(
         conv.id,
@@ -186,7 +222,7 @@ async def run_turn(
             image_uris.append(part.image_data_uri)
     if not parts and not image_uris:
         logger.info("turno %s: nada procesable en la ráfaga — silencio", identity)
-        return
+        return TurnResult(silencio="nada_procesable")
 
     user_text = "\n".join(parts)
     await ctx.store.add_message(
@@ -241,7 +277,9 @@ async def run_turn(
         ]
 
     # --- LLM con tools ----------------------------------------------------
-    runtime = ToolRuntime(ctx, conv, str(crm_conv_id), profile=profile)
+    runtime = ToolRuntime(
+        ctx, conv, str(crm_conv_id), profile=profile, trace=trace
+    )
     try:
         final_text = await _tool_loop(ctx, messages, runtime)
     except LlmExhausted as exc:
@@ -254,7 +292,7 @@ async def run_turn(
         await ctx.store.update_conversation(
             conv.id, phase="cerrada", followup_due_at=None
         )
-        return
+        return TurnResult(handoff="error", silencio="llm_agotado", tools=trace or [])
 
     # Backstop determinista: al tercer strike el handoff SUCEDE, lo haya
     # llamado el modelo o no (la regla de negocio no depende de su humor).
@@ -262,11 +300,14 @@ async def run_turn(
         runtime.handoff_reason = "hostilidad"
 
     # --- Enviar la respuesta (SIEMPRE vía el CRM, nunca Meta directo) -----
+    # Fase 7 — Última parada antes del lead: el Markdown que el modelo escribe
+    # igual pese al prompt se traduce acá (app/format.py).
+    reply_text = to_whatsapp(final_text.strip()) if final_text else ""
     sent = False
-    if final_text and final_text.strip():
-        sent = await _send(ctx, conv.id, str(crm_conv_id), final_text.strip())
+    if reply_text:
+        sent = await _send(ctx, conv.id, str(crm_conv_id), reply_text)
         if sent:
-            await ctx.store.add_message(conv.id, "assistant", final_text.strip())
+            await ctx.store.add_message(conv.id, "assistant", reply_text)
 
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused).
@@ -292,6 +333,14 @@ async def run_turn(
                 hours=settings.followup_hours
             )
     await ctx.store.update_conversation(conv.id, **updates)
+    reply = reply_text or None
+    return TurnResult(
+        reply=reply,
+        sent=sent,
+        handoff=runtime.handoff_reason,
+        silencio=None if reply else "sin_texto",
+        tools=trace or [],
+    )
 
 
 async def _run_reset(ctx: AppContext, conv: Any, identity: str) -> None:
@@ -318,10 +367,16 @@ async def _run_reset(ctx: AppContext, conv: Any, identity: str) -> None:
         )
 
 
-async def _fetch_context(ctx: AppContext, identity: str) -> dict[str, Any] | None:
+async def _fetch_context(
+    ctx: AppContext, identity: str, lab_conversation_id: str | None = None
+) -> dict[str, Any] | None:
     for attempt in range(CONTEXT_ATTEMPTS):
         try:
-            context = await ctx.crm.get_context(identity)
+            context = (
+                await ctx.crm.get_context_by_conversation(lab_conversation_id)
+                if lab_conversation_id is not None
+                else await ctx.crm.get_context(identity)
+            )
         except CrmError as exc:
             logger.warning(
                 "context de %s: error del CRM (intento %d): %s",

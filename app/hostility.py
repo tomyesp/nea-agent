@@ -34,6 +34,10 @@ HOSTILE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bhij[oa]\s+de\s+(puta|mil)\b",
         r"\bmuert[oa]s?\s+de\s+hambre\b|\bcagador(es)?\b|\bversero?s?\b",
         # --- Español general: fraude y desprecio ---
+        # "ladrón/ladrones" faltaba y es la acusación MÁS común en español:
+        # la detectó el Laboratorio (persona `hostil`), que llegó al cuarto
+        # mensaje sin que el contador viera un solo strike.
+        r"\bladr(ón|on|ones)a?s?\b|\bchor(r|)os?\b",
         r"\bestafador(es)?\b|\bestafas?\b|\bfraudes?\b|\brater[oa]s?\b|\bratas?\b|\brob[oa]s?\b",
         r"\bimb[eé]cil(es)?\b|\best[uú]pid[oa]s?\b|\bidiotas?\b|\bpendej[oa]s?\b",
         r"\bbasura\b|\bporquer[ií]a\b|\bmierdas?\b",

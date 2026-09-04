@@ -2,7 +2,7 @@
 
 Endpoints:
   GET  /api/bot/profile                               → agent profile + KB (404 = sin perfil)
-  GET  /api/bot/context?waIdentity=...
+  GET  /api/bot/context?waIdentity=... | ?conversationId=...
   POST /api/bot/messages   {conversationId, text}   → 409 ai_paused|window_closed
   PUT  /api/bot/ficha      {conversationId, ficha}
   POST /api/bot/handoff    {conversationId, reason}
@@ -148,6 +148,25 @@ class CrmClient:
         """Contexto conversacional; None si el CRM aún no conoce la identidad (404)."""
         resp = await self._request(
             "GET", "/api/bot/context", params={"waIdentity": wa_identity}
+        )
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise CrmError(f"context devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def get_context_by_conversation(self, conv_id: str) -> dict[str, Any] | None:
+        """Contexto por id de conversación — camino del Laboratorio (Fase 7).
+
+        El CRM se NIEGA a resolver una conversación de prueba por identidad
+        (`?waIdentity=` filtra is_test=false a propósito: el bot de producción
+        jamás debe terminar hablándole a un cliente simulado). Por id sí, que
+        es explícito: solo llega aquí quien ya tiene el id en la mano porque
+        el Laboratorio se lo pasó.
+        """
+        resp = await self._request(
+            "GET", "/api/bot/context", params={"conversationId": conv_id}
         )
         if resp.status_code == 404:
             return None

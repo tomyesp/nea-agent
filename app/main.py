@@ -28,6 +28,7 @@ from app.relay import RelayWorker
 from app.sender import SenderWorker
 from app.state import AppContext
 from app.turn import handle_flush
+from app.lab import router as lab_router
 from app.webhook import router as webhook_router
 
 logging.basicConfig(
@@ -119,6 +120,8 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     if ctx is not None:
         _wire_coalescer(ctx)
     app.include_router(webhook_router)
+    # Fase 7 — banco de pruebas del CRM (autenticado con la API key del bot).
+    app.include_router(lab_router)
 
     @app.get("/health")
     async def health(request: Request):  # type: ignore[no-untyped-def]

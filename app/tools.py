@@ -424,11 +424,18 @@ class ToolRuntime:
         conv: Conversation,
         crm_conversation_id: str,
         profile: BusinessProfile | None = None,
+        trace: list[dict[str, Any]] | None = None,
     ) -> None:
         self._ctx = ctx
         self._conv = conv
         self._crm_conv_id = crm_conversation_id
         self._profile = profile or BusinessProfile()
+        # Fase 7 — Bitácora del turno para el Laboratorio: qué herramienta se
+        # llamó, con qué y qué contestó. En producción es None y no cuesta
+        # nada. Sin ella el juez del Lab solo ve el texto, y en alquiler las
+        # fallas graves no se ven en el texto: un precio inventado y uno
+        # cotizado se leen exactamente igual.
+        self._trace = trace
         # Efectos observables por turn.py:
         self.handoff_reason: str | None = None  # se ejecuta DESPUÉS de la despedida
         self.booked = False
@@ -436,6 +443,14 @@ class ToolRuntime:
         self.proposed = False
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        result = await self._execute(name, args)
+        if self._trace is not None:
+            self._trace.append(
+                {"herramienta": name, "argumentos": args, "resultado": result}
+            )
+        return result
+
+    async def _execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
             if name == "update_ficha":
                 return await self._update_ficha(args)

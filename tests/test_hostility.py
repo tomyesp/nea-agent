@@ -143,3 +143,14 @@ async def test_dos_strikes_no_disparan_nada(respx_mock):
             await asyncio.sleep(0.3)
     await ctx.crm.aclose()
     assert routes["handoff"].call_count == 0
+
+def test_ladron_es_hostil_pero_ladrillo_no():
+    """017 Fase 7 — Hueco que encontró el Laboratorio: la persona `hostil`
+    llegó al cuarto mensaje ("ustedes son unos ladrones") sin que el contador
+    registrara un solo strike. Es la acusación más común en español y faltaba.
+    El límite de palabra evita que "ladrillo" —vocabulario diario en una obra—
+    dispare un handoff."""
+    assert is_hostile("ustedes son unos ladrones")
+    assert is_hostile("sos un ladrón")
+    assert is_hostile("son unos chorros")
+    assert not is_hostile("el ladrillo está caro esta semana")
