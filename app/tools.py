@@ -544,7 +544,8 @@ class ToolRuntime:
                 "nombres ninguna que no esté acá. La tarifa es de referencia "
                 "(sin IVA ni traslado) — para decir un precio usá cotizar o el "
                 "de una oferta. 'unidades_en_flota' NO es disponibilidad: para "
-                "saber si está libre en unas fechas, consultar_disponibilidad."
+                "saber si está libre en unas fechas, consultar_disponibilidad, "
+                "y una por una — que una esté tomada no dice NADA de las otras."
             ),
         }
 
@@ -836,6 +837,26 @@ class ToolRuntime:
                     ),
                     "ofertas_vigentes": _offers_for_llm(offered),
                 }
+            if exc.code == "ya_tiene_reserva":
+                # 017 Fase 7 (bis) — El CRM ya no deja acumular dos máquinas
+                # tomadas por un mismo lead. Antes esto llegaba disfrazado de
+                # `recien_tomada` ("otra reserva ganó esa unidad"), que es
+                # falso cuando el que la tiene es el propio lead, y mandaba al
+                # agente a ofrecer alternativas que no hacían falta.
+                previa = (exc.payload or {}).get("reservaExistente") or {}
+                return {
+                    "ok": False,
+                    "error": "ya_tiene_reserva",
+                    "reserva_actual": previa,
+                    "detalle": (
+                        "este lead YA tiene una máquina tomada en esta "
+                        "conversación (ver reserva_actual). No se le toma una "
+                        "segunda: si cambió de fechas o de máquina, movés la "
+                        "que ya tiene con cambiar_reserva_tentativa usando el "
+                        "oferta_id nuevo. Si de verdad quiere DOS máquinas a la "
+                        "vez, eso lo coordina una persona: hacé handoff."
+                    ),
+                }
             if exc.code == "ai_paused":
                 # Un humano tomó la conversación entre el contexto y la reserva.
                 return {
@@ -870,8 +891,12 @@ class ToolRuntime:
                 "quedó TOMADA, no confirmada. Decile exactamente eso: que se la "
                 "dejás tomada con la máquina, las fechas y el precio, y que un "
                 "asesor lo confirma a la brevedad. NUNCA digas 'confirmada', "
-                "'cerrada' ni 'reservada en firme'. Si después quiere cancelar o "
-                "cambiarla, eso lo ve una persona: hacé handoff."
+                "'cerrada' ni 'reservada en firme', y no le prometas hora ni "
+                "lugar de entrega: el traslado lo coordina el asesor.\n"
+                "Si más adelante quiere CORRER LAS FECHAS o cambiar de máquina, "
+                "no le tomes otra: consultá disponibilidad para lo nuevo y mové "
+                "esta con cambiar_reserva_tentativa. CANCELAR sí es de una "
+                "persona: ahí hacé handoff."
             ),
         }
 

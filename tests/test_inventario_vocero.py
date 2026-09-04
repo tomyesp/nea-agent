@@ -122,3 +122,87 @@ async def test_reserva_404_apaga_el_inventario_en_caliente(runtime_y_ctx, respx_
     )
     assert result["error"] == "sin_inventario"
     assert ctx.inventory_enabled is False
+
+
+async def test_segunda_reserva_manda_a_mover_no_a_ofrecer_alternativas(
+    runtime_y_ctx, respx_mock
+):
+    """017 Fase 7 (bis) — El lead que corre las fechas de su obra.
+
+    Lo encontró el Laboratorio (persona `cambia_de_idea`): el agente le tomaba
+    la máquina, el lead movía la obra dos días, y el agente le contestaba que
+    estaba OCUPADA. Lo estaba: por la reserva del propio lead. El CRM ahora
+    rechaza la segunda con `ya_tiene_reserva` y adjunta la que ya existe, para
+    que el agente sepa QUÉ mover en vez de salir a ofrecer alternativas que no
+    hacen falta.
+    """
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.post(f"{CRM_URL}/api/bot/reservas").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": {
+                    "code": "ya_tiene_reserva",
+                    "message": "Esta conversación ya tiene una reserva tentativa",
+                },
+                "reservaExistente": {
+                    "reservaId": "rent_1",
+                    "estado": "tentativa",
+                    "desde": "2026-10-05",
+                    "hasta": "2026-10-12",
+                    "montoCotizadoCents": 139_150_000,
+                },
+            },
+        )
+    )
+
+    out = await runtime.execute(
+        "crear_reserva_tentativa",
+        {"oferta_id": OFERTA_ID, "fechas_confirmadas": "dale, del 7 al 14"},
+    )
+
+    assert out["ok"] is False
+    assert out["error"] == "ya_tiene_reserva"
+    # La reserva que ya tiene viaja entera: sin ella el agente sabe que falló
+    # pero no qué mover.
+    assert out["reserva_actual"]["reservaId"] == "rent_1"
+    assert "cambiar_reserva_tentativa" in out["detalle"]
+    # Y no quedó marcada como reservada: no se creó nada.
+    assert runtime.booked is False
+
+
+async def test_tras_reservar_un_cambio_de_fechas_no_es_handoff(
+    runtime_y_ctx, respx_mock
+):
+    """La instrucción que devolvía la reserva mandaba a handoff ante cualquier
+    cambio, contradiciendo a `cambiar_reserva_tentativa`, que existe justo para
+    eso. Cancelar sí es de una persona; correr las fechas, no."""
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.post(f"{CRM_URL}/api/bot/reservas").mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "reserva": {
+                    "reservaId": "rent_1",
+                    "estado": "tentativa",
+                    "desde": "2026-10-05",
+                    "hasta": "2026-10-12",
+                    "montoCotizadoCents": 139_150_000,
+                }
+            },
+        )
+    )
+    respx_mock.put(f"{CRM_URL}/api/bot/ficha").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    out = await runtime.execute(
+        "crear_reserva_tentativa",
+        {"oferta_id": OFERTA_ID, "fechas_confirmadas": "dale"},
+    )
+
+    instrucciones = out["instrucciones"]
+    assert "cambiar_reserva_tentativa" in instrucciones
+    assert "CANCELAR" in instrucciones
+    # Y la promesa de entrega que el Lab cazó en la persona `apurado`.
+    assert "no le prometas hora ni lugar de entrega" in instrucciones
