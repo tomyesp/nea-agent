@@ -96,3 +96,13 @@ def test_despues_del_saludo_se_prohibe_volver_a_presentarse():
     assert "Es el PRIMER contacto" not in p
     assert "al pasar a un humano" in p
 
+
+def test_una_pregunta_tecnica_se_mira_en_el_catalogo():
+    """Con las fichas cargadas, escalar "cuanto excava" es perder un lead por
+    nada: el dato esta en specs. Salio de una corrida real — el agente escalo
+    "cuanto levanta la hidrogrua" sin abrir el catalogo."""
+    p = _prompt()
+    assert "preguntas TÉCNICAS" in p
+    assert "no escalando" in p
+    assert "pero primero MIRÁ" in p
+
