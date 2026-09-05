@@ -241,7 +241,12 @@ class CrmClient:
         return data
 
     async def get_disponibilidad(
-        self, conversation_id: str, model_id: str, desde: str, hasta: str
+        self,
+        conversation_id: str,
+        model_id: str,
+        desde: str,
+        hasta: str,
+        horas_por_dia: float | None = None,
     ) -> dict[str, Any]:
         """Disponibilidad y, a la vez, la OFERTA de esta conversación.
 
@@ -250,16 +255,24 @@ class CrmClient:
         reservar uno de esos. Cuando no hay, la respuesta igual trae
         `proximaFechaLibre` y `alternativas` reservables — nunca un "no hay"
         seco, que es la forma más cara de perder un lead de anuncio.
+
+        `horas_por_dia` es opcional: sin ella el CRM cotiza jornada completa y
+        lo DICE en la nota y en la etiqueta de la oferta. Se manda cuando el
+        lead ya pactó las horas, porque el precio de la oferta cambia con
+        ellas — RPM cotiza la hora de máquina, no el día.
         """
+        params: dict[str, Any] = {
+            "conversationId": conversation_id,
+            "modeloId": model_id,
+            "desde": desde,
+            "hasta": hasta,
+        }
+        if horas_por_dia is not None:
+            params["horasPorDia"] = horas_por_dia
         resp = await self._request(
             "GET",
             "/api/bot/disponibilidad",
-            params={
-                "conversationId": conversation_id,
-                "modeloId": model_id,
-                "desde": desde,
-                "hasta": hasta,
-            },
+            params=params,
         )
         if resp.status_code == 404:
             # 404 con cuerpo = modelo desconocido; vacío = no hay inventario.
@@ -295,13 +308,20 @@ class CrmClient:
         self,
         model_id: str,
         dias: int,
+        horas_por_dia: float,
         con_traslado: bool = False,
         km: float | None = None,
     ) -> dict[str, Any]:
-        """El desglose de precio. El agente NUNCA calcula ni redondea."""
+        """El desglose de precio. El agente NUNCA calcula ni redondea.
+
+        `horas_por_dia` es obligatoria porque RPM cotiza la HORA de máquina:
+        sin ella no hay precio, y un default silencioso acá sería el servidor
+        inventando una jornada que nadie pactó con el lead.
+        """
         body: dict[str, Any] = {
             "modeloId": model_id,
             "dias": dias,
+            "horasPorDia": horas_por_dia,
             "conTraslado": con_traslado,
         }
         if km is not None:

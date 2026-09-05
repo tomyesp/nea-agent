@@ -58,6 +58,50 @@ async def test_disponibilidad_manda_la_conversacion(runtime_y_ctx, respx_mock):
     assert params["modeloId"] == MODELO_ID
     assert params["desde"] == "2026-10-05"
     assert params["hasta"] == "2026-10-12"
+    # Sin horas pactadas no se manda el parámetro: el CRM cotiza la jornada
+    # completa y lo aclara. Mandar un 8 desde acá lo volvería una suposición
+    # del agente, indistinguible de un dato del lead.
+    assert "horasPorDia" not in params
+
+
+async def test_disponibilidad_manda_las_horas_cuando_el_lead_las_dijo(
+    runtime_y_ctx, respx_mock
+):
+    """El precio de la oferta se calcula sobre las horas: media jornada no
+    puede salir lo mismo que una entera."""
+    runtime, ctx, conv = runtime_y_ctx
+    route = respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(200, json={"disponible": True, "ofertas": []})
+    )
+    await runtime.execute(
+        "consultar_disponibilidad",
+        {
+            "modelo_id": MODELO_ID,
+            "desde": "2026-10-05",
+            "hasta": "2026-10-12",
+            "horas_por_dia": 4,
+        },
+    )
+    assert route.calls[0].request.url.params["horasPorDia"] == "4.0"
+
+
+async def test_horas_basura_del_modelo_no_viajan_al_crm(runtime_y_ctx, respx_mock):
+    """El modelo a veces manda "" o "todo el día". Eso no es un número de
+    horas: se trata como si no lo hubiera dicho, no como un 0."""
+    runtime, ctx, conv = runtime_y_ctx
+    route = respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(200, json={"disponible": True, "ofertas": []})
+    )
+    await runtime.execute(
+        "consultar_disponibilidad",
+        {
+            "modelo_id": MODELO_ID,
+            "desde": "2026-10-05",
+            "hasta": "2026-10-12",
+            "horas_por_dia": "todo el día",
+        },
+    )
+    assert "horasPorDia" not in route.calls[0].request.url.params
 
 
 async def test_sonda_de_capacidad_distingue_apagado_de_encendido(respx_mock):

@@ -69,7 +69,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "Cuándo la quiere arrancar (como lo dijo el lead)",
                     },
-                    "requiere_operario": {"type": "boolean"},
+                    "horas_por_dia": {
+                        "type": "number",
+                        "description": (
+                            "Horas de trabajo por dia que necesita la maquina "
+                            "(8 = jornada completa). Define el precio: sin esto "
+                            "no se puede cotizar."
+                        ),
+                    },
                     "requiere_traslado": {"type": "boolean"},
                     "empresa": {
                         "type": "string",
@@ -91,10 +98,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "buscar_maquinas",
             "description": (
                 "Consulta el catálogo REAL de máquinas del negocio: modelos, "
-                "marcas, specs, si requieren operario y su tarifa de referencia. "
-                "Usala apenas el lead insinúe qué necesita, incluso si lo dice "
-                "vago ('algo para mover tierra'): te devuelve de qué dispone el "
-                "negocio y recién ahí podés recomendar.\n"
+                "marcas, specs y el precio de la HORA de cada una. Usala apenas "
+                "el lead insinúe qué necesita, incluso si lo dice vago ('algo "
+                "para mover tierra'): te devuelve de qué dispone el negocio y "
+                "recién ahí podés recomendar.\n"
+                "La tarifa por hora que trae SÍ se la podés decir al lead tal "
+                "cual —es del negocio, no la calculaste vos— y alcanza para "
+                "contestar '¿cuánto sale?'. El precio de una obra concreta, en "
+                "cambio, sale de cotizar.\n"
                 "REGLA DURA: no podés nombrarle al lead NINGUNA máquina que no "
                 "haya salido de esta herramienta. Si no está en el catálogo, el "
                 "negocio no la tiene — decilo derecho y ofrecé lo que sí hay."
@@ -121,6 +132,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Pregunta si una máquina concreta está libre en un rango de "
                 "fechas, y de paso EMITE la oferta reservable. Necesita el "
                 "modelo_id exacto que te dio buscar_maquinas.\n"
+                "El precio de la oferta se calcula sobre las horas por día: si "
+                "el lead ya te dijo cuántas necesita, pasalas; si todavía no lo "
+                "hablaron, dejá el campo vacío y se cotiza jornada completa de 8 "
+                "horas (la respuesta te lo aclara para que se lo digas).\n"
                 "Te devuelve una de dos cosas:\n"
                 "· disponible=true con una o más ofertas, cada una con su "
                 "oferta_id, su etiqueta y su precio total. SOLO estas ofertas "
@@ -149,6 +164,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             "al 12 son 7 días de alquiler."
                         ),
                     },
+                    "horas_por_dia": {
+                        "type": "number",
+                        "description": (
+                            "Horas de trabajo por día, si el lead ya las dijo "
+                            "(8 = jornada completa, 4 = media). Vacío = se "
+                            "cotiza jornada completa."
+                        ),
+                    },
                 },
                 "required": ["modelo_id", "desde", "hasta"],
             },
@@ -159,14 +182,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "cotizar",
             "description": (
-                "Pide el precio desglosado de un alquiler: base por los días, "
-                "traslado, operario e IVA. Usala cuando el lead pregunte cuánto "
-                "sale, o cuando necesites sumarle el traslado a una oferta.\n"
-                "REGLA DURA: los precios SOLO salen de acá o de una oferta. "
-                "Nunca los calcules, los estimes, los redondees ni los "
-                "'aproximes' vos — ni siquiera si el lead te apura o si te "
-                "parece obvio multiplicar la diaria por los días (el negocio "
-                "tiene escalones semanales y mensuales que no son eso).\n"
+                "Pide el precio de un alquiler: las horas de máquina y, si "
+                "hace falta, el traslado. Usala cuando el lead pregunte cuánto "
+                "sale una obra concreta, o cuando necesites sumarle el traslado "
+                "a una oferta.\n"
+                "El negocio cotiza la HORA de máquina, y esa hora YA incluye el "
+                "operario y el combustible. Por eso necesita horas_por_dia: sin "
+                "eso no hay precio. Si el lead no las dijo, preguntáselas antes "
+                "de llamar acá.\n"
+                "El total que te devuelve es SIN IVA, y eso se lo tenés que "
+                "aclarar al lead cada vez que digas un precio.\n"
+                "REGLA DURA: los precios SOLO salen de acá, de una oferta o de "
+                "la tarifa por hora del catálogo. Nunca los calcules, los "
+                "estimes, los redondees ni los 'aproximes' vos — ni siquiera si "
+                "el lead te apura o si te parece obvio multiplicar.\n"
                 "OJO: cotizar NO chequea si la máquina está libre y NO emite "
                 "ninguna oferta reservable. Si el lead va a avanzar con esas "
                 "fechas, necesitás consultar_disponibilidad igual."
@@ -179,6 +208,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "description": "El modelo_id EXACTO del catálogo",
                     },
                     "dias": {"type": "integer", "description": "Días de alquiler"},
+                    "horas_por_dia": {
+                        "type": "number",
+                        "description": (
+                            "Horas de trabajo por día que pactaste con el lead. "
+                            "8 = jornada completa, 4 = media jornada. Si no lo "
+                            "hablaste todavía, preguntáselo antes de cotizar."
+                        ),
+                    },
                     "con_traslado": {
                         "type": "boolean",
                         "description": "Si el negocio lleva y trae la máquina",
@@ -188,7 +225,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "description": "Distancia a la obra en km (solo si con_traslado)",
                     },
                 },
-                "required": ["modelo_id", "dias"],
+                "required": ["modelo_id", "dias", "horas_por_dia"],
             },
         },
     },
@@ -341,6 +378,25 @@ def _pesos(cents: Any) -> str:
     return "$" + f"{value:,}".replace(",", ".")
 
 
+def _horas(raw: Any) -> float | None:
+    """Las horas por día que mandó el modelo, o None si no mandó nada usable.
+
+    Devuelve None en vez de un default: el que decide qué hacer sin horas es
+    cada handler —cotizar corta y pregunta, disponibilidad deja que el CRM
+    cotice la jornada y lo aclare—, y un default acá borraría esa diferencia.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        # El modelo a veces manda "8" o "8 horas"; lo primero se salva solo.
+        horas = float(str(raw).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    if not (0 < horas <= 24):
+        return None
+    return horas
+
+
 def _offers_from_payload(
     conversation_id: int, raw_offers: list[dict[str, Any]]
 ) -> list[RentalOffer]:
@@ -378,7 +434,7 @@ def _offers_for_llm(offers: list[RentalOffer]) -> list[dict[str, Any]]:
             "etiqueta": o.label,
             "desde": o.desde,
             "hasta": o.hasta,
-            "precio_total": _pesos(o.amount_cents),
+            "precio_total_sin_iva": _pesos(o.amount_cents),
         }
         for i, o in enumerate(offers, start=1)
     ]
@@ -529,11 +585,12 @@ class ToolRuntime:
                     "categoria": m.get("categoria"),
                     "descripcion": m.get("descripcion"),
                     "specs": m.get("specs") or {},
-                    "requiere_operario": bool(m.get("requiereOperario")),
+                    "va_con_operario": bool(m.get("requiereOperario")),
                     "unidades_en_flota": m.get("unidades"),
-                    "tarifa_diaria_referencia": _pesos(tarifa.get("diariaCents"))
-                    if tarifa.get("diariaCents") is not None
+                    "precio_por_hora": _pesos(tarifa.get("horaCents"))
+                    if tarifa.get("horaCents") is not None
                     else None,
+                    "minimo_horas": tarifa.get("minimoHoras") or None,
                 }
             )
         return {
@@ -541,11 +598,15 @@ class ToolRuntime:
             "maquinas": maquinas,
             "instrucciones": (
                 "estas son TODAS las máquinas del negocio que aplican: no "
-                "nombres ninguna que no esté acá. La tarifa es de referencia "
-                "(sin IVA ni traslado) — para decir un precio usá cotizar o el "
-                "de una oferta. 'unidades_en_flota' NO es disponibilidad: para "
-                "saber si está libre en unas fechas, consultar_disponibilidad, "
-                "y una por una — que una esté tomada no dice NADA de las otras."
+                "nombres ninguna que no esté acá.\n"
+                "El 'precio_por_hora' se lo podés decir tal cual —es la tarifa "
+                "del negocio— aclarando SIEMPRE dos cosas: que ya incluye "
+                "operario y combustible, y que es SIN IVA. Para el precio de "
+                "una obra concreta (tantos días por tantas horas) usá cotizar; "
+                "el traslado nunca está incluido y se cotiza aparte.\n"
+                "'unidades_en_flota' NO es disponibilidad: para saber si está "
+                "libre en unas fechas, consultar_disponibilidad, y una por una "
+                "— que una esté tomada no dice NADA de las otras."
             ),
         }
 
@@ -553,6 +614,7 @@ class ToolRuntime:
         model_id = str(args.get("modelo_id") or "").strip()
         desde = str(args.get("desde") or "").strip()
         hasta = str(args.get("hasta") or "").strip()
+        horas = _horas(args.get("horas_por_dia"))
         if not (model_id and desde and hasta):
             return {
                 "ok": False,
@@ -561,7 +623,7 @@ class ToolRuntime:
             }
         try:
             data = await self._ctx.crm.get_disponibilidad(
-                self._crm_conv_id, model_id, desde, hasta
+                self._crm_conv_id, model_id, desde, hasta, horas_por_dia=horas
             )
         except InventoryUnavailable:
             return self._sin_inventario()
@@ -580,6 +642,15 @@ class ToolRuntime:
                     "ok": False,
                     "error": "rango_invalido",
                     "detalle": "las fechas no son válidas; pedile al lead que las aclare",
+                }
+            if exc.code == "horas_invalidas":
+                return {
+                    "ok": False,
+                    "error": "horas_invalidas",
+                    "detalle": (
+                        "las horas por día tienen que estar entre 0,5 y 24; "
+                        "preguntale al lead cuántas horas necesita la máquina"
+                    ),
                 }
             if exc.code == "sin_tarifa":
                 return {
@@ -605,12 +676,18 @@ class ToolRuntime:
             return {
                 "ok": True,
                 "disponible": True,
+                "horas_por_dia": data.get("horasPorDia"),
                 "ofertas": _offers_for_llm(offers),
                 "instrucciones": (
-                    "ofrecele la máquina con SU etiqueta y SU precio_total tal "
-                    "cual (ese precio ya lleva IVA y NO lleva traslado). Cuando "
-                    "acepte, reservá con crear_reserva_tentativa usando el "
-                    "oferta_id exacto. Si quiere traslado, cotizá aparte."
+                    "ofrecele la máquina con SU etiqueta y SU precio_total_sin_iva tal "
+                    "cual. "
+                    # La nota viene del CRM y dice sobre cuántas horas se
+                    # calculó el monto: es la única forma de que el agente no
+                    # cotice una jornada que el lead nunca pidió.
+                    + str(data.get("nota") or "")
+                    + " Cuando acepte, reservá con crear_reserva_tentativa "
+                    "usando el oferta_id exacto. Si quiere traslado, cotizá "
+                    "aparte."
                 ),
             }
         return {
@@ -634,11 +711,24 @@ class ToolRuntime:
             dias = int(args.get("dias") or 0)
         except (TypeError, ValueError):
             dias = 0
+        horas = _horas(args.get("horas_por_dia"))
         if not model_id or dias < 1:
             return {
                 "ok": False,
                 "error": "faltan_datos",
                 "detalle": "necesito modelo_id del catálogo y cuántos días",
+            }
+        if horas is None:
+            # Sin horas no hay precio, y suponer una jornada sería cotizarle al
+            # lead algo que nunca pidió. Se devuelve la pregunta, no un número.
+            return {
+                "ok": False,
+                "error": "faltan_horas",
+                "detalle": (
+                    "el negocio cotiza por hora de máquina: preguntale al lead "
+                    "cuántas horas por día la necesita (jornada completa son 8) "
+                    "y recién ahí volvé a cotizar"
+                ),
             }
         con_traslado = bool(args.get("con_traslado"))
         km = args.get("km")
@@ -646,6 +736,7 @@ class ToolRuntime:
             data = await self._ctx.crm.post_cotizar(
                 model_id,
                 dias,
+                horas,
                 con_traslado=con_traslado,
                 km=float(km) if km is not None else None,
             )
@@ -670,28 +761,47 @@ class ToolRuntime:
             raise
 
         g = data.get("desglose") or {}
+        pedidas = data.get("horasPedidas")
+        facturadas = data.get("horasFacturadas")
+        minimo = (
+            "se factura el mínimo de %s horas del tarifario, no las %s que pidió"
+            % (data.get("minimoHoras"), pedidas)
+            if facturadas is not None and pedidas is not None and facturadas != pedidas
+            else None
+        )
         return {
             "ok": True,
             "modelo": data.get("modelo"),
             "dias": data.get("dias"),
-            "escalon": data.get("escalon"),
-            "alquiler": _pesos(g.get("baseCents")),
+            "horas_por_dia": data.get("horasPorDia"),
+            "horas_facturadas": facturadas,
+            "minimo_aplicado": minimo,
+            "precio_por_hora": _pesos(data.get("tarifaHoraCents")),
+            "maquina": _pesos(g.get("maquinaCents")),
             "traslado": _pesos(g.get("trasladoCents")) if g.get("trasladoCents") else None,
-            "operario": _pesos(g.get("operarioCents")) if g.get("operarioCents") else None,
-            "subtotal": _pesos(g.get("subtotalCents")),
-            "iva": _pesos(g.get("ivaCents")),
-            "total": _pesos(g.get("totalCents")),
-            "requiere_operario": bool(data.get("requiereOperario")),
+            # El nombre del campo hace la mitad del trabajo: un modelo que copia
+            # "total_sin_iva" difícilmente termine diciendo que el IVA está.
+            "total_sin_iva": _pesos(g.get("totalCents")),
             "instrucciones": (
-                "decí estos números TAL CUAL, sin redondear ni recalcular. El "
-                "escalón te dice si se aplicó tarifa diaria, semanal o mensual "
-                "— si el lead pregunta por qué, explicáselo con eso. Si "
-                "requiere_operario es true, el operario no es opcional: va "
-                "siempre con la máquina.\n"
+                "decí estos números TAL CUAL, sin redondear ni recalcular. Son "
+                "%s horas de máquina (%s días × %s por día) a %s la hora.\n"
+                "DOS COSAS QUE SIEMPRE van con el precio: que NO incluye IVA "
+                "(decilo así, '$X + IVA') y que la máquina va con operario y "
+                "combustible incluidos. Lo segundo es un argumento de venta, no "
+                "una letra chica: usalo.\n"
+                "El traslado NO está en ese total salvo que lo hayas pedido "
+                "acá. %s\n"
                 "ESTO NO RESERVÓ NADA ni verificó que la máquina esté libre. "
                 "Si le vas a ofrecer tomarla en esas fechas, llamá AHORA "
-                "consultar_disponibilidad: sin eso no hay oferta y después no "
-                "vas a poder reservarle nada."
+                "consultar_disponibilidad con las MISMAS horas por día: sin eso "
+                "no hay oferta y después no vas a poder reservarle nada."
+            )
+            % (
+                facturadas,
+                data.get("dias"),
+                data.get("horasPorDia"),
+                _pesos(data.get("tarifaHoraCents")),
+                minimo or "",
             ),
         }
 
@@ -786,7 +896,7 @@ class ToolRuntime:
                     {
                         "modelo_id": a.get("modeloId"),
                         "nombre": a.get("nombre"),
-                        "tarifa_diaria_referencia": _pesos(a.get("tarifaDiariaCents")),
+                        "precio_por_hora": _pesos(a.get("tarifaHoraCents")),
                     }
                     for a in exc.alternativas
                 ],
@@ -885,7 +995,10 @@ class ToolRuntime:
             "etiqueta": chosen.label,
             "desde": reserva.get("desde") or chosen.desde,
             "hasta": reserva.get("hasta") or chosen.hasta,
-            "precio_total": _pesos(reserva.get("montoCotizadoCents") or chosen.amount_cents),
+            "horas_por_dia": reserva.get("horasPorDia"),
+            "precio_total_sin_iva": _pesos(
+                reserva.get("montoCotizadoCents") or chosen.amount_cents
+            ),
             "estado": reserva.get("estado") or "tentativa",
             "instrucciones": (
                 "quedó TOMADA, no confirmada. Decile exactamente eso: que se la "
@@ -945,7 +1058,8 @@ class ToolRuntime:
             "etiqueta": chosen.label,
             "desde": reserva.get("desde") or chosen.desde,
             "hasta": reserva.get("hasta") or chosen.hasta,
-            "precio_total": _pesos(
+            "horas_por_dia": reserva.get("horasPorDia"),
+            "precio_total_sin_iva": _pesos(
                 reserva.get("montoCotizadoCents") or chosen.amount_cents
             ),
             "estado": reserva.get("estado") or "tentativa",

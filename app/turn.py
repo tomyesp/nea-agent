@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from app import media
 from app.config import canonical_identity
 from app.format import to_whatsapp
+from app.greeting import strip_restart
 from app.crm import CrmConflict, CrmError, canonical_handoff_reason
 from app.escalation import alert_for, needs_human
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
@@ -327,6 +328,12 @@ async def run_turn(
     # Fase 7 — Última parada antes del lead: el Markdown que el modelo escribe
     # igual pese al prompt se traduce acá (app/format.py).
     reply_text = to_whatsapp(final_text.strip()) if final_text else ""
+    # …y el reinicio de conversación que el modelo pega atrás de una despedida
+    # cuando un mensaje de sistema le reencuadra el turno (app/greeting.py).
+    # `conv.greeted` es el estado ANTES de este turno: el saludo del primer
+    # contacto no se toca.
+    if reply_text:
+        reply_text = strip_restart(reply_text, profile.agent_name, conv.greeted)
     sent = False
     if reply_text:
         sent = await _send(ctx, conv.id, str(crm_conv_id), reply_text)

@@ -49,3 +49,50 @@ def test_un_cambio_de_fechas_se_mueve_no_se_acumula():
     p = _prompt()
     assert "cambiar_reserva_tentativa" in p
     assert "NO crees una segunda reserva" in p
+
+
+def test_fija_las_tres_condiciones_comerciales():
+    """RPM cotiza la HORA, con operario y combustible incluidos y sin IVA.
+    Las tres van juntas en cada precio: las dos primeras venden, la tercera
+    evita la discusión el día de la factura."""
+    p = _prompt()
+    assert "HORA DE MÁQUINA" in p
+    assert "operario y combustible" in p
+    assert "SIN IVA" in p
+    assert "sin aclarar que NO incluye IVA" in p
+
+
+def test_pide_las_horas_antes_de_cotizar():
+    """Sin horas por día no hay precio: el agente tiene que preguntarlas en
+    vez de suponer una jornada."""
+    p = _prompt()
+    assert "cuántas horas por día" in p.lower()
+    assert "no supongas una jornada" in p.lower()
+
+
+def _prompt_ya_saludado() -> str:
+    return build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea"),
+        context={"contact": {"name": "Lead"}, "conversation": {}},
+        conv=Conversation(id=1, wa_identity="5493511111111", greeted=True),
+        referral_headline=None,
+        offered=[],
+        inventory=True,
+        tz=ZoneInfo("America/Argentina/Buenos_Aires"),
+    )
+
+
+def test_el_primer_contacto_pide_saludo():
+    assert "Es el PRIMER contacto" in _prompt()
+    assert "YA te presentaste" not in _prompt()
+
+
+def test_despues_del_saludo_se_prohibe_volver_a_presentarse():
+    """El chasis dice "Primer mensaje: saludo + gancho + pregunta" siempre. Sin
+    esta linea, con un mensaje de sistema reencuadrando el turno el modelo
+    escribia la despedida y arrancaba la conversacion de nuevo abajo."""
+    p = _prompt_ya_saludado()
+    assert "YA te presentaste" in p
+    assert "Es el PRIMER contacto" not in p
+    assert "al pasar a un humano" in p
+

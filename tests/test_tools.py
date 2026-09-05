@@ -59,9 +59,9 @@ async def test_buscar_maquinas_devuelve_solo_lo_del_catalogo(runtime_y_ctx, resp
                         "marca": "JCB",
                         "categoria": "Retroexcavadoras",
                         "specs": {"potencia_hp": 92},
-                        "requiereOperario": False,
+                        "requiereOperario": True,
                         "unidades": 2,
-                        "tarifa": {"diariaCents": 21_000_000},
+                        "tarifa": {"horaCents": 3_200_000, "minimoHoras": 0},
                     }
                 ],
             },
@@ -70,8 +70,12 @@ async def test_buscar_maquinas_devuelve_solo_lo_del_catalogo(runtime_y_ctx, resp
     result = await runtime.execute("buscar_maquinas", {"consulta": "retro"})
     assert result["ok"] is True
     assert [m["nombre"] for m in result["maquinas"]] == ["Retroexcavadora JCB 3CX"]
-    # El precio de referencia llega formateado en pesos, listo para copiar.
-    assert result["maquinas"][0]["tarifa_diaria_referencia"] == "$210.000"
+    # El precio de la hora llega formateado en pesos, listo para copiar.
+    assert result["maquinas"][0]["precio_por_hora"] == "$32.000"
+    assert result["maquinas"][0]["va_con_operario"] is True
+    # Las dos condiciones que el agente tiene que repetir en cada precio.
+    assert "operario y combustible" in result["instrucciones"]
+    assert "SIN IVA" in result["instrucciones"]
     assert route.calls[0].request.url.params["q"] == "retro"
 
 
@@ -116,7 +120,7 @@ async def test_disponibilidad_emite_ofertas_y_las_espeja(runtime_y_ctx, respx_mo
     )
     assert result["ok"] is True and result["disponible"] is True
     assert result["ofertas"][0]["oferta_id"] == "roff_nueva"
-    assert result["ofertas"][0]["precio_total"] == "$1.119.250"
+    assert result["ofertas"][0]["precio_total_sin_iva"] == "$1.119.250"
     # La conversación viaja SIEMPRE: es contra ella que el CRM registra la oferta.
     assert route.calls[0].request.url.params["conversationId"] == CRM_CONV_ID
     # El espejo se reemplaza completo: la vigente es la última ronda.
@@ -190,31 +194,96 @@ async def test_cotizar_devuelve_el_desglose_del_servidor(runtime_y_ctx, respx_mo
             json={
                 "modelo": "Retroexcavadora JCB 3CX",
                 "dias": 7,
-                "escalon": "semanal",
+                "horasPorDia": 8,
+                "horasPedidas": 56,
+                "horasFacturadas": 56,
+                "minimoHoras": 0,
+                "tarifaHoraCents": 3_200_000,
                 "desglose": {
-                    "baseCents": 115_000_000,
+                    "maquinaCents": 179_200_000,
                     "trasladoCents": 10_800_000,
-                    "operarioCents": 0,
-                    "subtotalCents": 125_800_000,
-                    "ivaPct": 21,
-                    "ivaCents": 26_418_000,
-                    "totalCents": 152_218_000,
+                    "totalCents": 190_000_000,
                 },
-                "requiereOperario": False,
+                "incluyeOperario": True,
+                "incluyeCombustible": True,
+                "incluyeIva": False,
+                "requiereOperario": True,
             },
         )
     )
     result = await runtime.execute(
         "cotizar",
-        {"modelo_id": MODELO_ID, "dias": 7, "con_traslado": True, "km": 40},
+        {
+            "modelo_id": MODELO_ID,
+            "dias": 7,
+            "horas_por_dia": 8,
+            "con_traslado": True,
+            "km": 40,
+        },
     )
     assert result["ok"] is True
-    assert result["escalon"] == "semanal"
-    assert result["total"] == "$1.522.180"
+    assert result["horas_facturadas"] == 56
+    assert result["precio_por_hora"] == "$32.000"
+    # El nombre del campo es parte del contrato: el modelo copia "sin_iva".
+    assert result["total_sin_iva"] == "$1.900.000"
     assert result["traslado"] == "$108.000"
-    # El operario en cero no se le muestra al modelo: renglón que no aplica.
-    assert result["operario"] is None
-    assert json.loads(route.calls[0].request.content)["km"] == 40
+    # Sin mínimo que aplicar, no se le cuenta al modelo un renglón que no pasó.
+    assert result["minimo_aplicado"] is None
+    assert "+ IVA" in result["instrucciones"]
+    assert "operario y combustible" in result["instrucciones"]
+    body = json.loads(route.calls[0].request.content)
+    assert body["km"] == 40
+    assert body["horasPorDia"] == 8
+
+
+async def test_cotizar_sin_horas_pregunta_en_vez_de_suponer_una_jornada(
+    runtime_y_ctx, respx_mock
+):
+    """El negocio cotiza la hora: suponer 8 sería cotizarle al lead una
+    jornada que nunca pidió. Se devuelve la pregunta, no un número."""
+    runtime, ctx, conv = runtime_y_ctx
+    cotizar = respx_mock.post(f"{CRM_URL}/api/bot/cotizar").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    result = await runtime.execute("cotizar", {"modelo_id": MODELO_ID, "dias": 3})
+    assert result["ok"] is False
+    assert result["error"] == "faltan_horas"
+    assert "cuántas horas por día" in result["detalle"]
+    # Y no se gastó un viaje al CRM para averiguar lo que ya se sabía.
+    assert cotizar.call_count == 0
+
+
+async def test_cotizar_avisa_cuando_se_factura_el_minimo(runtime_y_ctx, respx_mock):
+    """Si el mínimo del tarifario pisa lo pedido, el agente tiene que poder
+    explicar por qué el número no es horas × tarifa."""
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.post(f"{CRM_URL}/api/bot/cotizar").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "modelo": "Retroexcavadora JCB 3CX",
+                "dias": 1,
+                "horasPorDia": 2,
+                "horasPedidas": 2,
+                "horasFacturadas": 4,
+                "minimoHoras": 4,
+                "tarifaHoraCents": 3_200_000,
+                "desglose": {
+                    "maquinaCents": 12_800_000,
+                    "trasladoCents": 0,
+                    "totalCents": 12_800_000,
+                },
+                "incluyeIva": False,
+            },
+        )
+    )
+    result = await runtime.execute(
+        "cotizar", {"modelo_id": MODELO_ID, "dias": 1, "horas_por_dia": 2}
+    )
+    assert result["ok"] is True
+    assert result["minimo_aplicado"] is not None
+    assert "mínimo de 4 horas" in result["minimo_aplicado"]
+    assert result["total_sin_iva"] == "$128.000"
 
 
 async def test_cotizar_sin_tarifa_no_deja_inventar_un_precio(runtime_y_ctx, respx_mock):
@@ -224,7 +293,9 @@ async def test_cotizar_sin_tarifa_no_deja_inventar_un_precio(runtime_y_ctx, resp
             409, json={"error": {"code": "sin_tarifa", "message": "sin tarifa"}}
         )
     )
-    result = await runtime.execute("cotizar", {"modelo_id": MODELO_ID, "dias": 3})
+    result = await runtime.execute(
+        "cotizar", {"modelo_id": MODELO_ID, "dias": 3, "horas_por_dia": 8}
+    )
     assert result["ok"] is False
     assert result["error"] == "sin_tarifa"
     assert "no inventes" in result["detalle"]
@@ -321,7 +392,7 @@ async def test_reserva_con_oferta_emitida_queda_tentativa(runtime_y_ctx, respx_m
     )
     assert result["ok"] is True
     assert result["estado"] == "tentativa"
-    assert result["precio_total"] == "$1.391.500"
+    assert result["precio_total_sin_iva"] == "$1.391.500"
     # Y la instrucción le prohíbe explícitamente decir "confirmada".
     assert "NUNCA digas 'confirmada'" in result["instrucciones"]
     assert runtime.booked is True
@@ -383,7 +454,7 @@ async def test_reserva_perdida_sin_otra_igual_ofrece_alternativas(
                     {
                         "modeloId": "mmod_cat416",
                         "nombre": "Retroexcavadora CAT 416F2",
-                        "tarifaDiariaCents": 18_500_000,
+                        "tarifaHoraCents": 2_800_000,
                     }
                 ],
             },
@@ -395,7 +466,7 @@ async def test_reserva_perdida_sin_otra_igual_ofrece_alternativas(
     )
     assert result["error"] == "recien_tomada"
     assert result["alternativas"][0]["nombre"] == "Retroexcavadora CAT 416F2"
-    assert result["alternativas"][0]["tarifa_diaria_referencia"] == "$185.000"
+    assert result["alternativas"][0]["precio_por_hora"] == "$28.000"
 
 
 async def test_reserva_con_oferta_vencida_manda_a_reconsultar(runtime_y_ctx, respx_mock):

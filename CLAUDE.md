@@ -44,9 +44,18 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   decide qué es reservable. `rental_offers` de Nea es un ESPEJO: sirve para
   etiquetar bonito y frenar alucinaciones antes del viaje de red. Si el CRM
   rechaza un `oferta_id`, su palabra gana — no se discute.
+- **Cómo cobra RPM, y por qué está en el código y no en el prompt**: se cobra
+  la HORA DE MÁQUINA, esa hora ya incluye operario y combustible, y los
+  precios son SIN IVA. Por eso `cotizar` exige `horas_por_dia` (sin horas no
+  hay precio, y un default sería el servidor inventando una jornada que nadie
+  pactó) y por eso el campo del desglose se llama `total_sin_iva`: un modelo
+  que copia ese nombre difícilmente termine diciendo que el IVA está adentro.
+  Las tres condiciones viajan en cada respuesta de herramienta, no solo en el
+  prompt — si el negocio cambia de política, cambia el CRM y el agente se
+  entera solo.
 - **El agente no inventa NADA de tres cosas**: máquinas (solo las del
-  catálogo), precios (solo de `cotizar` o de una oferta) y fechas (solo las
-  que confirmó la disponibilidad). Y jamás dice "confirmada": lo que crea es
+  catálogo), precios (solo de `cotizar`, de una oferta o de la tarifa por hora
+  del catálogo) y fechas (solo las que confirmó la disponibilidad). Y jamás dice "confirmada": lo que crea es
   una **tentativa** que confirma un humano en el CRM. Cualquier cambio de
   prompt que toque esto re-corre el self-test de comportamiento.
 - **Descuentos, facturación, seguros y plazos largos son handoff.** No los
@@ -58,6 +67,16 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   El detector mira al lead y NO a la respuesta del agente a propósito: "un
   asesor te confirma la reserva" (venta correcta) y "eso lo ve un asesor"
   (escalada) se parecen demasiado para distinguirlas por texto generado.
+- **El agente se presenta UNA vez.** El chasis dice "Primer mensaje: saludo +
+  gancho + pregunta" y no tenía cómo saber que ese mensaje ya pasó: cuando un
+  mensaje de sistema le reencuadra el turno (la alerta de escalamiento, el
+  candado de cierre), el modelo escribía lo pedido y arrancaba la conversación
+  de nuevo abajo — una despedida con un "¡Hola! Soy Nea…" pegado atrás, que
+  encima invita a seguir hablando con la IA que se acaba de despedir. El
+  prompt ahora lo prohíbe cuando `conv.greeted`, y `app/greeting.py` lo CORTA
+  pase lo que pase, como `format.py` con el Markdown. Corta solo el reinicio
+  (presentación con saludo o abriendo renglón, con texto válido delante); no
+  toca al primer contacto ni al agente contestando quién es.
 - **El inventario puede no existir.** En Vocero va detrás de la bandera
   `INVENTARIO`, apagada por defecto: esos endpoints responden 404. Se sondea al
   arrancar (`crm.inventory_available()`); sin inventario no se le enseñan al
