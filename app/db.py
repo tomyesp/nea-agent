@@ -241,25 +241,58 @@ class PgStore:
                     conversation_id,
                 )
                 for offer in offers:
+                    await self._insert_offer(conn, conversation_id, offer)
+
+    async def add_rental_offers(
+        self,
+        conversation_id: int,
+        offers: list[RentalOffer],
+        supersede_model_ids: set[str],
+    ) -> None:
+        """Suma ofertas sin borrar las de OTRAS máquinas.
+
+        Reemplaza solo las de los modelos que se volvieron a consultar: igual
+        que el CRM, para que el espejo y la autoridad digan lo mismo.
+        """
+        tapadas = sorted(set(supersede_model_ids) | {o.model_id for o in offers})
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                if tapadas:
                     await conn.execute(
-                        """
-                        INSERT INTO rental_offers
-                          (conversation_id, offer_id, model_id, label, desde,
-                           hasta, amount_cents)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
+                        "DELETE FROM rental_offers WHERE conversation_id = $1 "
+                        "AND model_id = ANY($2::text[])",
                         conversation_id,
-                        offer.offer_id,
-                        offer.model_id,
-                        offer.label,
-                        offer.desde,
-                        offer.hasta,
-                        offer.amount_cents,
+                        tapadas,
                     )
+                for offer in offers:
+                    await self._insert_offer(conn, conversation_id, offer)
+
+    @staticmethod
+    async def _insert_offer(conn, conversation_id: int, offer: RentalOffer) -> None:
+        await conn.execute(
+            """
+            INSERT INTO rental_offers
+              (conversation_id, offer_id, model_id, label, desde,
+               hasta, amount_cents, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (conversation_id, offer_id) DO NOTHING
+            """,
+            conversation_id,
+            offer.offer_id,
+            offer.model_id,
+            offer.label,
+            offer.desde,
+            offer.hasta,
+            offer.amount_cents,
+            offer.expires_at,
+        )
 
     async def get_rental_offers(self, conversation_id: int) -> list[RentalOffer]:
         rows = await self.pool.fetch(
-            "SELECT * FROM rental_offers WHERE conversation_id = $1 ORDER BY id",
+            # Las vencidas ya no se muestran ni se numeran: el CRM las
+            # rechazaría igual, y ofrecerlas es ofrecer algo que no existe.
+            "SELECT * FROM rental_offers WHERE conversation_id = $1 "
+            "AND (expires_at IS NULL OR expires_at > now()) ORDER BY id",
             conversation_id,
         )
         return [
@@ -271,6 +304,7 @@ class PgStore:
                 desde=r["desde"],
                 hasta=r["hasta"],
                 amount_cents=r["amount_cents"],
+                expires_at=r["expires_at"],
                 offered_at=r["offered_at"],
             )
             for r in rows

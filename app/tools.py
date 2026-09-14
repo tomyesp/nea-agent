@@ -27,6 +27,7 @@ from app.crm import (
     InventoryUnavailable,
     RecentlyTaken,
 )
+from app.fechas import parse_instante, rango_de_uso, vista_de_periodo
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, RentalOffer
 
@@ -136,6 +137,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Pregunta si una máquina concreta está libre en un rango de "
                 "fechas, y de paso EMITE la oferta reservable. Necesita el "
                 "modelo_id exacto que te dio buscar_maquinas.\n"
+                "FECHAS: pasá el PRIMER y el ÚLTIMO día que la máquina trabaja, "
+                "y cuántos días son contando los dos, como los cuenta el lead: "
+                "'sábado y domingo' = desde el sábado, ultimo_dia el domingo, "
+                "dias=2; 'del 12 al 15' = 4 días. Si no sabés desde cuándo, "
+                "preguntá: no supongas que arranca hoy.\n"
                 "El precio de la oferta se calcula sobre las horas por día: si "
                 "el lead ya te dijo cuántas necesita, pasalas; si todavía no lo "
                 "hablaron, dejá el campo vacío y se cotiza jornada completa de 8 "
@@ -159,13 +165,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                     "desde": {
                         "type": "string",
-                        "description": "Primer día del alquiler, AAAA-MM-DD",
+                        "description": "Primer día que la máquina trabaja, AAAA-MM-DD",
                     },
-                    "hasta": {
+                    "ultimo_dia": {
                         "type": "string",
                         "description": (
-                            "Día de devolución, AAAA-MM-DD. Es exclusivo: del 5 "
-                            "al 12 son 7 días de alquiler."
+                            "ÚLTIMO día que la máquina trabaja, AAAA-MM-DD, "
+                            "incluido. Sábado y domingo: el domingo. Un solo "
+                            "día: el mismo que desde."
+                        ),
+                    },
+                    "dias": {
+                        "type": "integer",
+                        "description": (
+                            "Cuántos días trabaja la máquina, contando el "
+                            "primero y el último. Tiene que cerrar con las "
+                            "fechas: si no cierra, la consulta se rechaza."
                         ),
                     },
                     "horas_por_dia": {
@@ -177,7 +192,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         ),
                     },
                 },
-                "required": ["modelo_id", "desde", "hasta"],
+                "required": ["modelo_id", "desde", "ultimo_dia", "dias"],
             },
         },
     },
@@ -419,29 +434,56 @@ def _offers_from_payload(
                 desde=str(raw.get("desde") or ""),
                 hasta=str(raw.get("hasta") or ""),
                 amount_cents=int(raw.get("montoCotizadoCents") or 0),
+                expires_at=parse_instante(raw.get("expiraEn")),
             )
         )
     return out
 
 
-def _offers_for_llm(offers: list[RentalOffer]) -> list[dict[str, Any]]:
+def _offers_for_llm(
+    offers: list[RentalOffer], mirror: list[RentalOffer] | None = None
+) -> list[dict[str, Any]]:
+    """Las ofertas como las ve el modelo.
+
+    `opcion` existe porque los modelos chicos NO copian un nanoid opaco: mandan
+    "1" o "oferta_id_1" y la reserva se caía. El número DIRECCIONA una oferta ya
+    emitida, no es un permiso nuevo: se resuelve contra el espejo, así que la
+    garantía ("solo se reserva lo que el servidor ofreció") no se toca.
+
+    Por eso el número es la posición en el espejo COMPLETO (`mirror`) —la misma
+    que el prompt muestra entre corchetes y contra la que `_match_offer`
+    resuelve—, no la posición dentro de esta respuesta. Desde que conviven
+    ofertas de varias máquinas, numerar por respuesta hacía que la "opción 1"
+    de la herramienta y la [1] del prompt fueran máquinas distintas.
+
+    Las fechas van como último día de uso y días contados: el `hasta`
+    exclusivo del CRM es exactamente el número que hizo equivocar al modelo.
+    """
+    orden = {o.offer_id: i for i, o in enumerate(mirror or offers, start=1)}
     return [
         {
-            # `opcion` existe porque los modelos chicos NO copian un nanoid
-            # opaco: mandan "1" o "oferta_id_1" y la reserva se caía. El número
-            # es una forma de DIRECCIONAR una oferta ya emitida, no un permiso
-            # nuevo: se resuelve contra este mismo espejo, así que la garantía
-            # ("solo se reserva lo que el servidor ofreció") no se toca.
-            "opcion": i,
+            "opcion": orden.get(o.offer_id),
             "oferta_id": o.offer_id,
             "modelo_id": o.model_id,
             "etiqueta": o.label,
-            "desde": o.desde,
-            "hasta": o.hasta,
+            **vista_de_periodo(o.desde, o.hasta),
             "precio_total_sin_iva": _pesos(o.amount_cents),
         }
-        for i, o in enumerate(offers, start=1)
+        for o in offers
     ]
+
+
+def _reserva_para_llm(raw: dict[str, Any]) -> dict[str, Any]:
+    """Una reserva del CRM con el período como lo lee el lead (sin `hasta`)."""
+    out = {
+        k: v
+        for k, v in raw.items()
+        if k not in ("desde", "hasta", "montoCotizadoCents")
+    }
+    out.update(vista_de_periodo(raw.get("desde"), raw.get("hasta")))
+    if raw.get("montoCotizadoCents") is not None:
+        out["precio_total_sin_iva"] = _pesos(raw.get("montoCotizadoCents"))
+    return out
 
 
 def _match_offer(
@@ -501,6 +543,9 @@ class ToolRuntime:
         self.booked = False
         self.routed_out = False
         self.proposed = False
+        # La reserva que quedó tomada o movida en ESTE turno (etiqueta y
+        # precio): turn.py verifica que la respuesta nombre esa máquina.
+        self.booking: dict[str, Any] | None = None
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         result = await self._execute(name, args)
@@ -616,15 +661,20 @@ class ToolRuntime:
 
     async def _consultar_disponibilidad(self, args: dict[str, Any]) -> dict[str, Any]:
         model_id = str(args.get("modelo_id") or "").strip()
-        desde = str(args.get("desde") or "").strip()
-        hasta = str(args.get("hasta") or "").strip()
         horas = _horas(args.get("horas_por_dia"))
-        if not (model_id and desde and hasta):
+        if not model_id:
             return {
                 "ok": False,
                 "error": "faltan_datos",
-                "detalle": "necesito modelo_id del catálogo, desde y hasta (AAAA-MM-DD)",
+                "detalle": "necesito el modelo_id del catálogo",
             }
+        # El modelo habla en días de uso, como el lead, y acá se pasa al
+        # `hasta` exclusivo del CRM. Si el rango y la cuenta de días no
+        # cierran, se frena ANTES de emitir una oferta con fechas equivocadas.
+        rango = rango_de_uso(args.get("desde"), args.get("ultimo_dia"), args.get("dias"))
+        if isinstance(rango, dict):
+            return rango
+        desde, hasta = rango
         try:
             data = await self._ctx.crm.get_disponibilidad(
                 self._crm_conv_id, model_id, desde, hasta, horas_por_dia=horas
@@ -672,8 +722,10 @@ class ToolRuntime:
             data.get("alternativas") or []
         )
         offers = _offers_from_payload(self._conv.id, raw)
-        # Reemplazo completo: la oferta vigente es siempre la última ronda.
-        await self._ctx.store.replace_rental_offers(self._conv.id, offers)
+        # Las ofertas de ESTA máquina (y de sus alternativas) reemplazan a las
+        # suyas; las de otras máquinas siguen vigentes, igual que en el CRM.
+        await self._ctx.store.add_rental_offers(self._conv.id, offers, {model_id})
+        mirror = await self._ctx.store.get_rental_offers(self._conv.id)
         self.proposed = True
 
         if disponible:
@@ -681,10 +733,11 @@ class ToolRuntime:
                 "ok": True,
                 "disponible": True,
                 "horas_por_dia": data.get("horasPorDia"),
-                "ofertas": _offers_for_llm(offers),
+                "ofertas": _offers_for_llm(offers, mirror),
                 "instrucciones": (
                     "ofrecele la máquina con SU etiqueta y SU precio_total_sin_iva tal "
-                    "cual. "
+                    "cual: la etiqueta ya trae los días contados, así el lead ve "
+                    "si es lo que pidió. "
                     # La nota viene del CRM y dice sobre cuántas horas se
                     # calculó el monto: es la única forma de que el agente no
                     # cotice una jornada que el lead nunca pidió.
@@ -699,7 +752,7 @@ class ToolRuntime:
             "disponible": False,
             "motivo": data.get("motivo"),
             "proxima_fecha_libre": data.get("proximaFechaLibre"),
-            "alternativas": _offers_for_llm(offers),
+            "alternativas": _offers_for_llm(offers, mirror),
             "instrucciones": (
                 "esa máquina está tomada en ese rango. NO cortes con un 'no "
                 "hay': ofrecele la proxima_fecha_libre, o alguna de las "
@@ -832,12 +885,17 @@ class ToolRuntime:
             # le dice qué copiar y de dónde.
             vigentes = _offers_for_llm(offered)
             if vigentes:
+                # Nunca "copiá uno cualquiera": así se tomó una 416E cuando el
+                # lead había elegido la 406, cuya oferta ya no existía.
                 detalle = (
                     "ese oferta_id no existe. NO inventes ids ni uses "
-                    "placeholders: copiá TAL CUAL uno de los `oferta_id` que "
-                    "vienen en `ofertas_vigentes` acá abajo y volvé a llamar "
-                    "crear_reserva_tentativa con ese, en este mismo turno. No "
-                    "hace falta volver a consultar disponibilidad."
+                    "placeholders: copiá TAL CUAL el `oferta_id` de "
+                    "`ofertas_vigentes` que corresponda a la MÁQUINA y las "
+                    "FECHAS que el lead aceptó, y volvé a llamar con ese en "
+                    "este mismo turno. Si lo que aceptó no está en la lista "
+                    "(venció, o era otra máquina), NO tomes otra en su lugar: "
+                    "consultá disponibilidad de nuevo para esa máquina y esas "
+                    "fechas."
                 )
             else:
                 detalle = (
@@ -860,7 +918,9 @@ class ToolRuntime:
         )
         return chosen, None
 
-    async def _recovery(self, exc: RecentlyTaken) -> dict[str, Any]:
+    async def _recovery(
+        self, exc: RecentlyTaken, lost_model_id: str
+    ) -> dict[str, Any]:
         """Otro lead ganó la unidad: re-ofrecer sin cortar la conversación.
 
         El CRM manda la salida en el mismo cuerpo — ofertas frescas de la
@@ -869,7 +929,9 @@ class ToolRuntime:
         mensaje del lead.
         """
         fresh = _offers_from_payload(self._conv.id, exc.ofertas)
-        await self._ctx.store.replace_rental_offers(self._conv.id, fresh)
+        # La oferta perdida ya no sirve; las de otras máquinas, sí.
+        await self._ctx.store.add_rental_offers(self._conv.id, fresh, {lost_model_id})
+        mirror = await self._ctx.store.get_rental_offers(self._conv.id)
         logger.info(
             "tools: carrera perdida — %d oferta(s) fresca(s), %d alternativa(s)",
             len(fresh),
@@ -884,7 +946,7 @@ class ToolRuntime:
                     "en una línea y ofrecé esta, que es la misma máquina en las "
                     "mismas fechas y ya es reservable"
                 ),
-                "ofertas": _offers_for_llm(fresh),
+                "ofertas": _offers_for_llm(fresh, mirror),
             }
         if exc.alternativas:
             return {
@@ -926,7 +988,7 @@ class ToolRuntime:
                 localidad_obra=str(args.get("localidad_obra") or "") or None,
             )
         except RecentlyTaken as exc:
-            return await self._recovery(exc)
+            return await self._recovery(exc, chosen.model_id)
         except InventoryUnavailable:
             return self._sin_inventario()
         except CrmConflict as exc:
@@ -961,7 +1023,7 @@ class ToolRuntime:
                 return {
                     "ok": False,
                     "error": "ya_tiene_reserva",
-                    "reserva_actual": previa,
+                    "reserva_actual": _reserva_para_llm(previa),
                     "detalle": (
                         "este lead YA tiene una máquina tomada en esta "
                         "conversación (ver reserva_actual). No se le toma una "
@@ -994,15 +1056,19 @@ class ToolRuntime:
             )
         except CrmError as exc:  # best-effort: la reserva ya existe
             logger.warning("tools: no pude actualizar ficha tras reservar: %s", exc)
+        precio = _pesos(reserva.get("montoCotizadoCents") or chosen.amount_cents)
+        # Lo que se tomó de verdad, para que turn.py verifique que la
+        # confirmación nombre ESTA máquina y no la que el modelo recuerde.
+        self.booking = {"etiqueta": chosen.label, "precio_total_sin_iva": precio}
         return {
             "ok": True,
             "etiqueta": chosen.label,
-            "desde": reserva.get("desde") or chosen.desde,
-            "hasta": reserva.get("hasta") or chosen.hasta,
-            "horas_por_dia": reserva.get("horasPorDia"),
-            "precio_total_sin_iva": _pesos(
-                reserva.get("montoCotizadoCents") or chosen.amount_cents
+            **vista_de_periodo(
+                reserva.get("desde") or chosen.desde,
+                reserva.get("hasta") or chosen.hasta,
             ),
+            "horas_por_dia": reserva.get("horasPorDia"),
+            "precio_total_sin_iva": precio,
             "estado": reserva.get("estado") or "tentativa",
             "instrucciones": (
                 "quedó TOMADA, no confirmada. Decile exactamente eso: que se la "
@@ -1024,7 +1090,7 @@ class ToolRuntime:
         try:
             result = await self._ctx.crm.move_rental(self._crm_conv_id, chosen.offer_id)
         except RecentlyTaken as exc:
-            return await self._recovery(exc)
+            return await self._recovery(exc, chosen.model_id)
         except InventoryUnavailable:
             return self._sin_inventario()
         except CrmConflict as exc:
@@ -1057,15 +1123,21 @@ class ToolRuntime:
         await self._ctx.store.clear_rental_offers(self._conv.id)
         self.booked = True
         reserva = result.get("reserva") or {}
+        precio = _pesos(reserva.get("montoCotizadoCents") or chosen.amount_cents)
+        self.booking = {
+            "etiqueta": chosen.label,
+            "precio_total_sin_iva": precio,
+            "movida": True,
+        }
         return {
             "ok": True,
             "etiqueta": chosen.label,
-            "desde": reserva.get("desde") or chosen.desde,
-            "hasta": reserva.get("hasta") or chosen.hasta,
-            "horas_por_dia": reserva.get("horasPorDia"),
-            "precio_total_sin_iva": _pesos(
-                reserva.get("montoCotizadoCents") or chosen.amount_cents
+            **vista_de_periodo(
+                reserva.get("desde") or chosen.desde,
+                reserva.get("hasta") or chosen.hasta,
             ),
+            "horas_por_dia": reserva.get("horasPorDia"),
+            "precio_total_sin_iva": precio,
             "estado": reserva.get("estado") or "tentativa",
             "instrucciones": (
                 "quedó movida y sigue TOMADA, no confirmada. Confirmale la "

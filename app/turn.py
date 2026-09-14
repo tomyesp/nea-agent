@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from app import media
 from app.config import canonical_identity
+from app.booking_guard import confirm_booking
 from app.format import to_whatsapp
 from app.greeting import strip_restart
 from app.crm import CrmConflict, CrmError, canonical_handoff_reason
@@ -334,6 +335,10 @@ async def run_turn(
     # contacto no se toca.
     if reply_text:
         reply_text = strip_restart(reply_text, profile.agent_name, conv.greeted)
+    # …y si en este turno se tomó o se movió una máquina, que la confirmación
+    # nombre ESA máquina, escriba lo que escriba el modelo (app/booking_guard.py).
+    if runtime.booking is not None:
+        reply_text = confirm_booking(reply_text, runtime.booking)
     sent = False
     if reply_text:
         sent = await _send(ctx, conv.id, str(crm_conv_id), reply_text)

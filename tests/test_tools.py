@@ -116,14 +116,14 @@ async def test_disponibilidad_emite_ofertas_y_las_espeja(runtime_y_ctx, respx_mo
     )
     result = await runtime.execute(
         "consultar_disponibilidad",
-        {"modelo_id": MODELO_ID, "desde": "2026-11-03", "hasta": "2026-11-08"},
+        {"modelo_id": MODELO_ID, "desde": "2026-11-03", "ultimo_dia": "2026-11-07", "dias": 5},
     )
     assert result["ok"] is True and result["disponible"] is True
     assert result["ofertas"][0]["oferta_id"] == "roff_nueva"
     assert result["ofertas"][0]["precio_total_sin_iva"] == "$1.119.250"
     # La conversación viaja SIEMPRE: es contra ella que el CRM registra la oferta.
     assert route.calls[0].request.url.params["conversationId"] == CRM_CONV_ID
-    # El espejo se reemplaza completo: la vigente es la última ronda.
+    # Misma máquina: la oferta nueva reemplaza a la vieja de ESA máquina.
     offers = await ctx.store.get_rental_offers(conv.id)
     assert [o.offer_id for o in offers] == ["roff_nueva"]
 
@@ -155,7 +155,7 @@ async def test_disponibilidad_sin_stock_trae_salida_no_un_no_seco(
     )
     result = await runtime.execute(
         "consultar_disponibilidad",
-        {"modelo_id": MODELO_ID, "desde": "2026-10-05", "hasta": "2026-10-12"},
+        {"modelo_id": MODELO_ID, "desde": "2026-10-05", "ultimo_dia": "2026-10-11", "dias": 7},
     )
     assert result["disponible"] is False
     assert result["proxima_fecha_libre"] == "2026-10-13"
@@ -176,11 +176,111 @@ async def test_disponibilidad_modelo_inventado_manda_al_catalogo(
     )
     result = await runtime.execute(
         "consultar_disponibilidad",
-        {"modelo_id": "mmod_inventado", "desde": "2026-10-05", "hasta": "2026-10-12"},
+        {"modelo_id": "mmod_inventado", "desde": "2026-10-05", "ultimo_dia": "2026-10-11", "dias": 7},
     )
     assert result["ok"] is False
     assert result["error"] == "modelo_desconocido"
     assert "buscar_maquinas" in result["detalle"]
+
+
+async def test_disponibilidad_de_otra_maquina_no_borra_la_primera(runtime_y_ctx, respx_mock):
+    """El lead compara dos retros: consultar la segunda no puede matar la oferta
+    de la primera. Pasó con un lead real: eligió la primera, ya no era
+    reservable, y el agente terminó tomando la otra."""
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "disponible": True,
+                "ofertas": [
+                    {
+                        "ofertaId": "roff_416",
+                        "modeloId": "mmod_416",
+                        "desde": "2026-10-05",
+                        "hasta": "2026-10-12",
+                        "montoCotizadoCents": 98_789_600,
+                        "etiqueta": "Retroexcavadora 416E, lun 5 al dom 11 oct (7 días), 8 hs/día",
+                    }
+                ],
+            },
+        )
+    )
+    result = await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": "mmod_416", "desde": "2026-10-05", "ultimo_dia": "2026-10-11", "dias": 7},
+    )
+    offers = await ctx.store.get_rental_offers(conv.id)
+    # Las dos máquinas siguen reservables.
+    assert [o.offer_id for o in offers] == [OFERTA_ID, "roff_416"]
+    # Y la opción que ve el modelo es la MISMA posición que muestra el prompt
+    # y contra la que se resuelve un "2", no la posición en esta respuesta.
+    assert result["ofertas"][0]["opcion"] == 2
+
+
+async def test_la_oferta_se_muestra_con_ultimo_dia_y_dias_nunca_con_hasta(
+    runtime_y_ctx, respx_mock
+):
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "disponible": True,
+                "ofertas": [
+                    {
+                        "ofertaId": "roff_finde",
+                        "modeloId": MODELO_ID,
+                        "desde": "2026-09-12",
+                        "hasta": "2026-09-14",
+                        "montoCotizadoCents": 282_256_000,
+                        "etiqueta": "Retroexcavadora 416E, sáb 12 al dom 13 sept (2 días), 8 hs/día",
+                    }
+                ],
+            },
+        )
+    )
+    result = await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": MODELO_ID, "desde": "2026-09-12", "ultimo_dia": "2026-09-13", "dias": 2},
+    )
+    oferta = result["ofertas"][0]
+    assert oferta["ultimo_dia"] == "2026-09-13"
+    assert oferta["dias"] == 2
+    assert "hasta" not in oferta
+
+
+async def test_disponibilidad_le_manda_al_crm_el_dia_de_devolucion(runtime_y_ctx, respx_mock):
+    """Sábado y domingo → el CRM recibe hasta=lunes: su período es [desde, hasta)."""
+    runtime, ctx, conv = runtime_y_ctx
+    route = respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(200, json={"disponible": True, "ofertas": []})
+    )
+    await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": MODELO_ID, "desde": "2026-09-12", "ultimo_dia": "2026-09-13", "dias": 2},
+    )
+    params = route.calls[0].request.url.params
+    assert params["desde"] == "2026-09-12"
+    assert params["hasta"] == "2026-09-14"
+
+
+async def test_sabado_y_domingo_como_un_dia_se_frena_sin_tocar_el_crm(
+    runtime_y_ctx, respx_mock
+):
+    """El defecto real: "sábado y domingo" consultado como un solo día, a mitad
+    de precio. Ahora el rango y la cuenta tienen que cerrar."""
+    runtime, ctx, conv = runtime_y_ctx
+    route = respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(200, json={"disponible": True, "ofertas": []})
+    )
+    result = await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": MODELO_ID, "desde": "2026-09-12", "ultimo_dia": "2026-09-13", "dias": 1},
+    )
+    assert result["ok"] is False
+    assert result["error"] == "fechas_no_cierran"
+    assert route.call_count == 0
 
 
 # -------------------------------------------------------------- cotizar ---
@@ -322,6 +422,8 @@ async def test_reserva_rechaza_oferta_no_emitida_sin_tocar_el_crm(
     assert runtime.booked is False
     # Se le devuelve lo que SÍ está vigente, para que re-ofrezca en vez de insistir.
     assert result["ofertas_vigentes"][0]["oferta_id"] == OFERTA_ID
+    # Y no lo empuja a tomar una cualquiera de la lista: la que ELIGIÓ el lead.
+    assert "NO tomes otra" in result["detalle"]
 
 
 async def test_reserva_por_numero_de_opcion(runtime_y_ctx, respx_mock):
@@ -393,6 +495,12 @@ async def test_reserva_con_oferta_emitida_queda_tentativa(runtime_y_ctx, respx_m
     assert result["ok"] is True
     assert result["estado"] == "tentativa"
     assert result["precio_total_sin_iva"] == "$1.391.500"
+    # Las fechas vuelven como las lee el lead: último día de uso y días.
+    assert result["ultimo_dia"] == "2026-10-11"
+    assert result["dias"] == 7
+    assert "hasta" not in result
+    # Queda registrado QUÉ se tomó, para verificar la confirmación.
+    assert runtime.booking["etiqueta"] == "Retroexcavadora JCB 3CX, 5 oct al 12 oct"
     # Y la instrucción le prohíbe explícitamente decir "confirmada".
     assert "NUNCA digas 'confirmada'" in result["instrucciones"]
     assert runtime.booked is True
@@ -524,6 +632,7 @@ async def test_cambiar_reserva_mueve_en_vez_de_duplicar(runtime_y_ctx, respx_moc
     )
     assert result["ok"] is True
     assert result["estado"] == "tentativa"
+    assert runtime.booking["movida"] is True
     assert json.loads(patch.calls[0].request.content)["ofertaId"] == OFERTA_ID
     assert await ctx.store.get_rental_offers(conv.id) == []
 

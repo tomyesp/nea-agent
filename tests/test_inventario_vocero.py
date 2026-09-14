@@ -51,7 +51,7 @@ async def test_disponibilidad_manda_la_conversacion(runtime_y_ctx, respx_mock):
     )
     await runtime.execute(
         "consultar_disponibilidad",
-        {"modelo_id": MODELO_ID, "desde": "2026-10-05", "hasta": "2026-10-12"},
+        {"modelo_id": MODELO_ID, "desde": "2026-10-05", "ultimo_dia": "2026-10-11", "dias": 7},
     )
     params = route.calls[0].request.url.params
     assert params["conversationId"] == CRM_CONV_ID
@@ -78,7 +78,8 @@ async def test_disponibilidad_manda_las_horas_cuando_el_lead_las_dijo(
         {
             "modelo_id": MODELO_ID,
             "desde": "2026-10-05",
-            "hasta": "2026-10-12",
+            "ultimo_dia": "2026-10-11",
+            "dias": 7,
             "horas_por_dia": 4,
         },
     )
@@ -97,7 +98,8 @@ async def test_horas_basura_del_modelo_no_viajan_al_crm(runtime_y_ctx, respx_moc
         {
             "modelo_id": MODELO_ID,
             "desde": "2026-10-05",
-            "hasta": "2026-10-12",
+            "ultimo_dia": "2026-10-11",
+            "dias": 7,
             "horas_por_dia": "todo el día",
         },
     )
@@ -210,6 +212,9 @@ async def test_segunda_reserva_manda_a_mover_no_a_ofrecer_alternativas(
     # La reserva que ya tiene viaja entera: sin ella el agente sabe que falló
     # pero no qué mover.
     assert out["reserva_actual"]["reservaId"] == "rent_1"
+    # Con el último día de uso, no con el de devolución.
+    assert out["reserva_actual"]["ultimo_dia"] == "2026-10-11"
+    assert "hasta" not in out["reserva_actual"]
     assert "cambiar_reserva_tentativa" in out["detalle"]
     # Y no quedó marcada como reservada: no se creó nada.
     assert runtime.booked is False

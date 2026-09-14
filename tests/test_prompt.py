@@ -106,3 +106,17 @@ def test_una_pregunta_tecnica_se_mira_en_el_catalogo():
     assert "no escalando" in p
     assert "pero primero MIRÁ" in p
 
+
+
+def test_las_fechas_se_cuentan_como_las_cuenta_el_lead():
+    """Un lead real pidió sábado y domingo y se le cotizó un solo día."""
+    p = _prompt()
+    assert '"Sábado y domingo" son 2 días' in p
+    assert "no supongas que arranca hoy" in p
+
+
+def test_si_el_lead_frena_no_se_le_vuelve_a_ofrecer_cerrar():
+    """Un lead real: "vas muy rápido", "quiero que me sigas asesorando", y el
+    agente le propuso tomar la máquina cuatro veces en cinco minutos."""
+    p = _prompt()
+    assert "DEJÁS DE OFRECERLE TOMAR LA MÁQUINA" in p

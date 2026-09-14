@@ -163,6 +163,12 @@ class Store(Protocol):
     async def replace_rental_offers(
         self, conversation_id: int, offers: list[RentalOffer]
     ) -> None: ...
+    async def add_rental_offers(
+        self,
+        conversation_id: int,
+        offers: list[RentalOffer],
+        supersede_model_ids: set[str],
+    ) -> None: ...
     async def get_rental_offers(self, conversation_id: int) -> list[RentalOffer]: ...
     async def clear_rental_offers(self, conversation_id: int) -> None: ...
 
@@ -294,8 +300,28 @@ class MemoryStore:
     ) -> None:
         self.offered[conversation_id] = list(offers)
 
+    async def add_rental_offers(
+        self,
+        conversation_id: int,
+        offers: list[RentalOffer],
+        supersede_model_ids: set[str],
+    ) -> None:
+        tapadas = set(supersede_model_ids) | {o.model_id for o in offers}
+        nuevas = {o.offer_id for o in offers}
+        siguen = [
+            o
+            for o in self.offered.get(conversation_id, [])
+            if o.model_id not in tapadas and o.offer_id not in nuevas
+        ]
+        self.offered[conversation_id] = siguen + list(offers)
+
     async def get_rental_offers(self, conversation_id: int) -> list[RentalOffer]:
-        return list(self.offered.get(conversation_id, []))
+        ahora = utcnow()
+        return [
+            o
+            for o in self.offered.get(conversation_id, [])
+            if o.expires_at is None or o.expires_at > ahora
+        ]
 
     async def clear_rental_offers(self, conversation_id: int) -> None:
         self.offered.pop(conversation_id, None)
