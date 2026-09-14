@@ -502,16 +502,44 @@ async def _fetch_context(
     return None
 
 
+#: Herramientas cuyo resultado no le da al modelo nada nuevo que decirle al
+#: lead: guardan un dato (update_ficha) o agendan el pase a humano para
+#: DESPUÉS de la despedida (handoff). Si el modelo escribió su mensaje en la
+#: misma vuelta en que las llamó, ese mensaje es la respuesta del turno.
+HERRAMIENTAS_SILENCIOSAS = frozenset({"update_ficha", "handoff"})
+
+
 async def _tool_loop(
     ctx: AppContext, messages: list[dict[str, Any]], runtime: ToolRuntime
 ) -> str | None:
-    """Rondas de tool-calling hasta obtener texto final (o rendirse)."""
+    """Rondas de tool-calling hasta obtener texto final (o rendirse).
+
+    El texto que el modelo escribe JUNTO a una llamada a herramienta también es
+    su respuesta. Antes se descartaba, y pasó en vivo (2026-09-14): a "buenas
+    me gustaría alquilar una máquina" el modelo escribió el saludo y en la
+    misma vuelta guardó la ficha. El saludo nunca salió; la vuelta siguiente
+    ya no tenía nada que decir y al lead le llegó "Quedo a la espera de tu
+    respuesta." Con Haiku peor: tres respuestas vacías, silencio y la charla
+    pasada a un humano con motivo `error`. Qwen lo hizo 1 de cada 3 veces.
+    """
+    # Lo último que el modelo escribió junto a herramientas que sí informan
+    # (catálogo, disponibilidad…): si después no contesta, eso es lo que dijo.
+    dicho: str | None = None
     for _ in range(MAX_TOOL_ROUNDS):
-        reply = await ctx.llm.complete(
-            messages, tools=tool_schemas(ctx.inventory_enabled)
-        )
+        try:
+            reply = await ctx.llm.complete(
+                messages, tools=tool_schemas(ctx.inventory_enabled)
+            )
+        except LlmExhausted:
+            if dicho:
+                logger.warning(
+                    "turno: el modelo no contestó después de las herramientas — "
+                    "sale lo que ya había escrito"
+                )
+                return dicho
+            raise
         if not reply.tool_calls:
-            return reply.content  # turno de puro texto
+            return reply.content or dicho  # turno de puro texto
         # content vacío con tool_calls es normal (turno solo-herramientas)
         messages.append(
             {
@@ -539,8 +567,12 @@ async def _tool_loop(
                     "content": json.dumps(result, ensure_ascii=False, default=str),
                 }
             )
-    logger.warning("turno: demasiadas rondas de herramientas — corto sin texto")
-    return None
+        if reply.content:
+            if all(tc.name in HERRAMIENTAS_SILENCIOSAS for tc in reply.tool_calls):
+                return reply.content
+            dicho = reply.content
+    logger.warning("turno: demasiadas rondas de herramientas — corto")
+    return dicho
 
 
 SEND_ATTEMPTS = 4  # backoff 1 s, 2 s, 4 s entre intentos (~7 s en el turno)
