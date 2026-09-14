@@ -486,6 +486,57 @@ async def test_cotizar_sin_tarifa_no_deja_inventar_un_precio(runtime_y_ctx, resp
 # ------------------------------------------------------------- reservar ---
 
 
+async def test_si_el_lead_ya_tiene_una_tomada_no_se_toma_otra_ni_se_reconsulta(
+    runtime_y_ctx, respx_mock
+):
+    """Pasó en vivo: tomó la 406 y, a un "sí, dale", intentó reservar otra vez;
+    sin oferta vigente, el error lo mandó a consultar disponibilidad y le volvió
+    a presentar la máquina como si estuviera libre."""
+    _, ctx, conv = runtime_y_ctx
+    etiqueta = "Retroexcavadora 406, sáb 19 al dom 20 sept (2 días), 8 hs/día"
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        reserva_activa={"etiqueta": etiqueta, "estado": "tentativa"},
+    )
+    reservas = respx_mock.post(f"{CRM_URL}/api/bot/reservas").mock(
+        return_value=httpx.Response(201, json={"reserva": {}})
+    )
+    result = await runtime.execute(
+        "crear_reserva_tentativa",
+        {"oferta_id": OFERTA_ID, "fechas_confirmadas": "sí, dale"},
+    )
+    assert result["ok"] is False
+    assert result["error"] == "ya_tiene_reserva"
+    assert etiqueta in result["detalle"]
+    assert "NO hace falta consultar disponibilidad" in result["detalle"]
+    assert "cambiar_reserva_tentativa" in result["detalle"]
+    assert reservas.call_count == 0
+    assert runtime.booked is False
+
+
+async def test_con_una_reserva_confirmada_cualquier_cambio_es_de_una_persona(
+    runtime_y_ctx, respx_mock
+):
+    _, ctx, conv = runtime_y_ctx
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        reserva_activa={
+            "etiqueta": "Topadora D6T, lun 5 oct (1 día), 8 hs/día",
+            "estado": "confirmada",
+        },
+    )
+    result = await runtime.execute(
+        "crear_reserva_tentativa",
+        {"oferta_id": OFERTA_ID, "fechas_confirmadas": "dale"},
+    )
+    assert result["error"] == "ya_tiene_reserva"
+    assert "handoff" in result["detalle"]
+
+
 async def test_reserva_rechaza_oferta_no_emitida_sin_tocar_el_crm(
     runtime_y_ctx, respx_mock
 ):

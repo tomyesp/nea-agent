@@ -1031,7 +1031,47 @@ class ToolRuntime:
             ),
         }
 
+    def _reserva_ya_tomada(self) -> dict[str, Any] | None:
+        """Cortar un segundo `crear_reserva_tentativa` antes de todo lo demás.
+
+        Pasó en vivo: tomó la 406 y, a un "sí, dale" del turno siguiente,
+        intentó reservar otra vez. Como tras reservar no queda oferta vigente,
+        el error de oferta desconocida lo mandaba a consultar disponibilidad, y
+        terminaba presentándole la máquina como libre antes de aclarar que ya
+        era suya. El CRM igual rechaza la segunda (`ya_tiene_reserva`), pero la
+        respuesta tiene que llegar ANTES de que el modelo salga a reconsultar.
+        """
+        reserva = self.booking or self._reserva_activa
+        if not reserva or not reserva.get("etiqueta"):
+            return None
+        etiqueta = reserva["etiqueta"]
+        estado = reserva.get("estado") or "tentativa"
+        if estado != "tentativa":
+            detalle = (
+                f"este lead YA TIENE una reserva confirmada por el equipo: "
+                f"{etiqueta}. No se toma otra. Si quiere cambiar algo de esa "
+                "reserva, lo ve una persona: handoff."
+            )
+        else:
+            detalle = (
+                f"este lead YA TIENE TOMADA: {etiqueta}. No se toma otra y NO "
+                "hace falta consultar disponibilidad: si te está confirmando de "
+                "nuevo ('sí', 'dale'), decile que ya la tiene tomada y que un "
+                "asesor lo contacta. Si quiere OTRAS fechas u OTRA máquina, "
+                "consultá disponibilidad para lo nuevo y movela con "
+                "cambiar_reserva_tentativa."
+            )
+        return {
+            "ok": False,
+            "error": "ya_tiene_reserva",
+            "reserva_actual": {"etiqueta": etiqueta, "estado": estado},
+            "detalle": detalle,
+        }
+
     async def _crear_reserva(self, args: dict[str, Any]) -> dict[str, Any]:
+        ya_tomada = self._reserva_ya_tomada()
+        if ya_tomada is not None:
+            return ya_tomada
         chosen, error = await self._resolve_offer(args)
         if error is not None or chosen is None:
             return error or {"ok": False, "error": "oferta_desconocida"}
