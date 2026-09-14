@@ -475,6 +475,33 @@ def _offers_for_llm(
     ]
 
 
+def _modelo_desconocido() -> dict[str, Any]:
+    """El error de un modelo_id que no existe, sin que se pueda leer como falta
+    de stock. Pasó en vivo: el modelo mandó "Retroexcavadora 406" como id, le
+    volvió este error, y le dijo al lead "la 406 no está disponible"."""
+    return {
+        "ok": False,
+        "error": "modelo_desconocido",
+        "detalle": (
+            "ese modelo_id no existe en el catálogo. OJO: esto NO quiere decir "
+            "que la máquina no esté disponible ni que no la tengamos: el id está "
+            "mal escrito. Volvé a llamar buscar_maquinas, copiá el modelo_id "
+            "(empieza con mmod_) y consultá de nuevo. NUNCA le digas al lead que "
+            "no hay por este error."
+        ),
+    }
+
+
+def _separar_letras_de_numeros(texto: str) -> str:
+    """"retroexcavadora406" → "retroexcavadora 406" (y "_" → espacio)."""
+    out: list[str] = []
+    for i, ch in enumerate(texto.replace("_", " ")):
+        if i > 0 and ch.isdigit() and out[-1].isalpha():
+            out.append(" ")
+        out.append(ch)
+    return "".join(out)
+
+
 def _reserva_para_llm(raw: dict[str, Any]) -> dict[str, Any]:
     """Una reserva del CRM con el período como lo lee el lead (sin `hasta`)."""
     out = {
@@ -688,6 +715,50 @@ class ToolRuntime:
             ),
         }
 
+    async def _resolver_modelo(
+        self, raw: str
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """El modelo_id real a partir de lo que mandó el modelo.
+
+        Los modelos chicos mandan el NOMBRE ("Retroexcavadora 406",
+        "retroexcavadora_406", "416E") donde va el id opaco. Pasó en las tres
+        corridas en vivo, y en una terminó en "la 406 no está disponible". Un
+        nombre que el catálogo identifica sin dudas se traduce acá; si coincide
+        con varias máquinas no se adivina: se le devuelven los candidatos.
+        """
+        if raw.startswith("mmod_"):
+            return raw, None
+        consultas = [raw]
+        separada = _separar_letras_de_numeros(raw)
+        if separada != raw:
+            consultas.append(separada)
+        for consulta in consultas:
+            try:
+                data = await self._ctx.crm.get_catalogo(consulta)
+            except InventoryUnavailable:
+                return None, self._sin_inventario()
+            modelos = [m for m in data.get("modelos") or [] if m.get("modeloId")]
+            if len(modelos) == 1:
+                resuelto = str(modelos[0]["modeloId"])
+                logger.info("tools: modelo %r resuelto por nombre a %s", raw, resuelto)
+                return resuelto, None
+            if len(modelos) > 1:
+                return None, {
+                    "ok": False,
+                    "error": "modelo_ambiguo",
+                    "detalle": (
+                        f"'{raw}' coincide con varias máquinas: elegí la que "
+                        "pidió el lead y volvé a llamar con SU modelo_id. Si no "
+                        "sabés cuál, preguntale. Esto no dice nada sobre si hay "
+                        "o no disponibilidad."
+                    ),
+                    "candidatos": [
+                        {"modelo_id": m.get("modeloId"), "nombre": m.get("nombre")}
+                        for m in modelos
+                    ],
+                }
+        return None, _modelo_desconocido()
+
     def _aviso_reserva_existente(self) -> str:
         """Si el lead ya tiene una máquina tomada, que no se la ofrezca de nuevo.
 
@@ -728,6 +799,10 @@ class ToolRuntime:
         if isinstance(rango, dict):
             return rango
         desde, hasta = rango
+        resuelto, error = await self._resolver_modelo(model_id)
+        if error is not None or resuelto is None:
+            return error or _modelo_desconocido()
+        model_id = resuelto
         try:
             data = await self._ctx.crm.get_disponibilidad(
                 self._crm_conv_id, model_id, desde, hasta, horas_por_dia=horas
@@ -736,14 +811,7 @@ class ToolRuntime:
             return self._sin_inventario()
         except CrmConflict as exc:
             if exc.code in ("modelo_desconocido", "not_found"):
-                return {
-                    "ok": False,
-                    "error": "modelo_desconocido",
-                    "detalle": (
-                        "ese modelo_id no existe en el catálogo; volvé a llamar "
-                        "buscar_maquinas y usá un modelo_id de ahí"
-                    ),
-                }
+                return _modelo_desconocido()
             if exc.code == "rango_invalido":
                 return {
                     "ok": False,
@@ -841,6 +909,10 @@ class ToolRuntime:
                     "y recién ahí volvé a cotizar"
                 ),
             }
+        resuelto, error = await self._resolver_modelo(model_id)
+        if error is not None or resuelto is None:
+            return error or _modelo_desconocido()
+        model_id = resuelto
         con_traslado = bool(args.get("con_traslado"))
         km = args.get("km")
         try:
@@ -864,11 +936,7 @@ class ToolRuntime:
                     ),
                 }
             if exc.code in ("modelo_desconocido", "not_found"):
-                return {
-                    "ok": False,
-                    "error": "modelo_desconocido",
-                    "detalle": "ese modelo_id no existe; volvé a llamar buscar_maquinas",
-                }
+                return _modelo_desconocido()
             raise
 
         g = data.get("desglose") or {}

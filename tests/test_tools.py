@@ -211,6 +211,9 @@ async def test_disponibilidad_modelo_inventado_manda_al_catalogo(
     assert result["ok"] is False
     assert result["error"] == "modelo_desconocido"
     assert "buscar_maquinas" in result["detalle"]
+    # Y no se puede leer como falta de stock: así se le dijo a un lead que
+    # una máquina libre "no está disponible".
+    assert "NO quiere decir que la máquina no esté disponible" in result["detalle"]
 
 
 async def test_disponibilidad_de_otra_maquina_no_borra_la_primera(runtime_y_ctx, respx_mock):
@@ -363,6 +366,97 @@ async def test_disponibilidad_sin_reserva_previa_no_avisa_nada(runtime_y_ctx, re
         {"modelo_id": MODELO_ID, "desde": "2026-09-19", "ultimo_dia": "2026-09-20", "dias": 2},
     )
     assert "YA TIENE" not in result["instrucciones"]
+
+
+def _catalogo_por_nombre(modelos_por_consulta: dict[str, list[dict]]):
+    """Mock del catálogo que contesta según la consulta."""
+
+    def responder(request):
+        q = request.url.params.get("q", "")
+        return httpx.Response(
+            200, json={"categorias": [], "modelos": modelos_por_consulta.get(q, [])}
+        )
+
+    return responder
+
+
+RETRO_406 = {"modeloId": "mmod_406", "nombre": "Retroexcavadora 406"}
+RETRO_416 = {"modeloId": "mmod_416", "nombre": "Retroexcavadora 416E"}
+
+
+async def test_con_el_nombre_en_vez_del_id_se_consulta_igual(runtime_y_ctx, respx_mock):
+    """Pasó en las tres corridas en vivo: el modelo mandó "Retroexcavadora 406"
+    como modelo_id, y en una le dijo al lead que la 406 no estaba disponible."""
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.get(f"{CRM_URL}/api/bot/catalogo").mock(
+        side_effect=_catalogo_por_nombre({"Retroexcavadora 406": [RETRO_406]})
+    )
+    disp = respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(200, json={"disponible": True, "ofertas": []})
+    )
+    result = await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": "Retroexcavadora 406", "desde": "2026-09-19", "ultimo_dia": "2026-09-20", "dias": 2},
+    )
+    assert result["ok"] is True
+    assert disp.calls[0].request.url.params["modeloId"] == "mmod_406"
+
+
+async def test_con_el_nombre_pegado_al_numero_tambien(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.get(f"{CRM_URL}/api/bot/catalogo").mock(
+        side_effect=_catalogo_por_nombre({"retroexcavadora 406": [RETRO_406]})
+    )
+    disp = respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(200, json={"disponible": True, "ofertas": []})
+    )
+    await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": "retroexcavadora406", "desde": "2026-09-19", "ultimo_dia": "2026-09-20", "dias": 2},
+    )
+    assert disp.calls[0].request.url.params["modeloId"] == "mmod_406"
+
+
+async def test_un_nombre_que_sirve_para_dos_maquinas_no_se_adivina(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.get(f"{CRM_URL}/api/bot/catalogo").mock(
+        side_effect=_catalogo_por_nombre({"retroexcavadora": [RETRO_406, RETRO_416]})
+    )
+    disp = respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(200, json={"disponible": True, "ofertas": []})
+    )
+    result = await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": "retroexcavadora", "desde": "2026-09-19", "ultimo_dia": "2026-09-20", "dias": 2},
+    )
+    assert result["error"] == "modelo_ambiguo"
+    assert [c["modelo_id"] for c in result["candidatos"]] == ["mmod_406", "mmod_416"]
+    assert "no dice nada sobre si hay" in result["detalle"]
+    assert disp.call_count == 0
+
+
+async def test_cotizar_con_el_nombre_tambien_resuelve(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.get(f"{CRM_URL}/api/bot/catalogo").mock(
+        side_effect=_catalogo_por_nombre({"416E": [RETRO_416]})
+    )
+    cot = respx_mock.post(f"{CRM_URL}/api/bot/cotizar").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "horasPedidas": 16,
+                "horasFacturadas": 16,
+                "minimoHoras": 0,
+                "tarifaHoraCents": 17_641_000,
+                "desglose": {"maquinaCents": 282_256_000, "trasladoCents": 0, "totalCents": 282_256_000},
+                "incluyeIva": False,
+            },
+        )
+    )
+    await runtime.execute(
+        "cotizar", {"modelo_id": "416E", "dias": 2, "horas_por_dia": 8}
+    )
+    assert json.loads(cot.calls[0].request.content)["modeloId"] == "mmod_416"
 
 
 # -------------------------------------------------------------- cotizar ---
