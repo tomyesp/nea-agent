@@ -121,8 +121,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "consulta": {
                         "type": "string",
                         "description": (
-                            "Palabras del lead para filtrar (ej. 'retro', 'grúa', "
-                            "'mover tierra'). Vacío = catálogo completo."
+                            "Las palabras que usó el lead, tal cual: el catálogo "
+                            "entiende los nombres de obra ('retro', 'retropala', "
+                            "'pala', 'bobcat', 'grúa', 'mover tierra'). Vacío = "
+                            "catálogo completo."
                         ),
                     }
                 },
@@ -527,8 +529,12 @@ class ToolRuntime:
         crm_conversation_id: str,
         profile: BusinessProfile | None = None,
         trace: list[dict[str, Any]] | None = None,
+        reserva_activa: dict[str, Any] | None = None,
     ) -> None:
         self._ctx = ctx
+        # La máquina que el lead YA tenía tomada al empezar el turno (del
+        # contexto del CRM). Ver `_aviso_reserva_existente`.
+        self._reserva_activa = reserva_activa or None
         self._conv = conv
         self._crm_conv_id = crm_conversation_id
         self._profile = profile or BusinessProfile()
@@ -611,16 +617,26 @@ class ToolRuntime:
         except InventoryUnavailable:
             return self._sin_inventario()
         modelos = list(data.get("modelos") or [])
+        coincidio = True
+        if not modelos and consulta:
+            # Sin coincidencias NO quiere decir que el negocio no la tenga: el
+            # lead la puede estar nombrando distinto. Pasó: con "retro 406" no
+            # salió nada, el agente dijo "no tenemos la 406" y la 406 estaba en
+            # el catálogo. Se trae el catálogo completo en el mismo turno, para
+            # que mire antes de negar.
+            try:
+                data = await self._ctx.crm.get_catalogo(None)
+            except InventoryUnavailable:
+                return self._sin_inventario()
+            modelos = list(data.get("modelos") or [])
+            coincidio = False
         if not modelos:
-            # Con filtro y sin resultados, reintentar sin filtro sería adivinar
-            # por el lead: mejor decirle que de eso no hay y mostrar qué sí hay.
             return {
                 "ok": True,
                 "maquinas": [],
                 "instrucciones": (
                     "el catálogo no tiene nada que coincida con eso. Decíselo "
-                    "derecho y volvé a llamar buscar_maquinas SIN consulta para "
-                    "ofrecerle lo que el negocio sí tiene."
+                    "derecho y no nombres ninguna máquina."
                 ),
             }
         maquinas = []
@@ -642,11 +658,24 @@ class ToolRuntime:
                     "minimo_horas": tarifa.get("minimoHoras") or None,
                 }
             )
+        aviso = (
+            ""
+            if coincidio
+            else (
+                f"OJO: nada se llama '{consulta}' en el catálogo, pero el lead "
+                "puede estar usando otro nombre para una máquina que SÍ hay. "
+                "Acá va el catálogo COMPLETO: fijate si alguna es lo que pide "
+                "ANTES de decirle que no la tenemos. Solo si de verdad no hay "
+                "nada parecido, decíselo y ofrecé lo que sí hay.\n"
+            )
+        )
         return {
             "ok": True,
+            "coincidencia": coincidio,
             "maquinas": maquinas,
             "instrucciones": (
-                "estas son TODAS las máquinas del negocio que aplican: no "
+                aviso
+                + "estas son TODAS las máquinas del negocio que aplican: no "
                 "nombres ninguna que no esté acá.\n"
                 "El 'precio_por_hora' se lo podés decir tal cual —es la tarifa "
                 "del negocio— aclarando SIEMPRE dos cosas: que ya incluye "
@@ -658,6 +687,30 @@ class ToolRuntime:
                 "— que una esté tomada no dice NADA de las otras."
             ),
         }
+
+    def _aviso_reserva_existente(self) -> str:
+        """Si el lead ya tiene una máquina tomada, que no se la ofrezca de nuevo.
+
+        Pasó: tomó la 416E y, a un "sí, dale" del turno siguiente, volvió a
+        consultar disponibilidad y preguntó "¿te la dejo tomada?". La reserva
+        puede venir del contexto (turnos anteriores) o de este mismo turno.
+        """
+        reserva = self.booking or self._reserva_activa
+        if not reserva or not reserva.get("etiqueta"):
+            return ""
+        if (reserva.get("estado") or "tentativa") != "tentativa":
+            return (
+                " OJO: este lead YA TIENE una reserva confirmada por el equipo: "
+                f"{reserva['etiqueta']}. No se la ofrezcas de nuevo; cualquier "
+                "cambio sobre esa reserva lo ve una persona: handoff."
+            )
+        return (
+            f" OJO: este lead YA TIENE TOMADA: {reserva['etiqueta']}. Si esta "
+            "consulta es para CAMBIARLA (otras fechas u otra máquina), confirmá "
+            "el cambio con el lead y usá cambiar_reserva_tentativa. Si es la "
+            "misma máquina y las mismas fechas, NO se la ofrezcas de nuevo: "
+            "decile que ya la tiene tomada."
+        )
 
     async def _consultar_disponibilidad(self, args: dict[str, Any]) -> dict[str, Any]:
         model_id = str(args.get("modelo_id") or "").strip()
@@ -745,6 +798,7 @@ class ToolRuntime:
                     + " Cuando acepte, reservá con crear_reserva_tentativa "
                     "usando el oferta_id exacto. Si quiere traslado, cotizá "
                     "aparte."
+                    + self._aviso_reserva_existente()
                 ),
             }
         return {

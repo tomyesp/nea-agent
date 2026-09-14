@@ -120,3 +120,47 @@ def test_si_el_lead_frena_no_se_le_vuelve_a_ofrecer_cerrar():
     agente le propuso tomar la máquina cuatro veces en cinco minutos."""
     p = _prompt()
     assert "DEJÁS DE OFRECERLE TOMAR LA MÁQUINA" in p
+
+
+def _prompt_con(context: dict) -> str:
+    return build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea"),
+        context=context,
+        conv=Conversation(id=1, wa_identity="5493511111111"),
+        referral_headline=None,
+        offered=[],
+        inventory=True,
+        tz=ZoneInfo("America/Argentina/Buenos_Aires"),
+    )
+
+
+def test_si_el_lead_ya_tiene_una_tomada_el_agente_lo_sabe():
+    """Tomó la 416E y, en el turno siguiente, a un "sí, dale" le volvió a
+    ofrecer la misma máquina: el prompt no le decía que ya la tenía."""
+    etiqueta = "Retroexcavadora 416E, sáb 19 al dom 20 sept (2 días), 8 hs/día"
+    p = _prompt_con(
+        {
+            "contact": {"name": "Lead"},
+            "conversation": {},
+            "reservaActiva": {"etiqueta": etiqueta, "estado": "tentativa"},
+        }
+    )
+    assert "YA TIENE UNA MÁQUINA TOMADA" in p
+    assert etiqueta in p
+
+
+def test_una_reserva_confirmada_no_se_ofrece_de_nuevo():
+    p = _prompt_con(
+        {
+            "contact": {"name": "Lead"},
+            "conversation": {},
+            "reservaActiva": {"etiqueta": "Topadora D6T, lun 5 oct (1 día), 8 hs/día", "estado": "confirmada"},
+        }
+    )
+    assert "YA TIENE UNA RESERVA CONFIRMADA" in p
+
+
+def test_sin_reserva_no_se_menciona_ninguna():
+    p = _prompt()
+    assert "YA TIENE UNA MÁQUINA TOMADA" not in p
+    assert "YA TIENE UNA RESERVA CONFIRMADA" not in p

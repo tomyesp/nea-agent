@@ -91,6 +91,36 @@ async def test_buscar_maquinas_sin_resultados_no_inventa(runtime_y_ctx, respx_mo
     assert "no tiene nada que coincida" in result["instrucciones"]
 
 
+async def test_buscar_sin_coincidencias_trae_el_catalogo_completo_antes_de_negar(
+    runtime_y_ctx, respx_mock
+):
+    """Pasó: con "retro 406" no salió nada y el agente dijo "no tenemos la 406",
+    que estaba en el catálogo. Sin coincidencias, se mira todo antes de negar."""
+    runtime, ctx, conv = runtime_y_ctx
+    modelo = {
+        "modeloId": MODELO_ID,
+        "nombre": "Retroexcavadora 406",
+        "categoria": "Retroexcavadoras",
+        "specs": {},
+        "requiereOperario": True,
+        "unidades": 1,
+        "tarifa": {"horaCents": 17_641_000, "minimoHoras": 0},
+    }
+
+    def catalogo(request):
+        filtrada = "q" in request.url.params
+        return httpx.Response(
+            200, json={"categorias": [], "modelos": [] if filtrada else [modelo]}
+        )
+
+    route = respx_mock.get(f"{CRM_URL}/api/bot/catalogo").mock(side_effect=catalogo)
+    result = await runtime.execute("buscar_maquinas", {"consulta": "la de las chicas"})
+    assert route.call_count == 2
+    assert result["coincidencia"] is False
+    assert [m["nombre"] for m in result["maquinas"]] == ["Retroexcavadora 406"]
+    assert "ANTES de decirle que no la tenemos" in result["instrucciones"]
+
+
 # -------------------------------------------------------- disponibilidad ---
 
 
@@ -281,6 +311,58 @@ async def test_sabado_y_domingo_como_un_dia_se_frena_sin_tocar_el_crm(
     assert result["ok"] is False
     assert result["error"] == "fechas_no_cierran"
     assert route.call_count == 0
+
+
+async def test_disponibilidad_avisa_si_el_lead_ya_tiene_una_tomada(
+    runtime_y_ctx, respx_mock
+):
+    """Pasó: tomó la 416E y, a un "sí, dale" del turno siguiente, volvió a
+    consultar y preguntó "¿te la dejo tomada?" por la misma máquina."""
+    _, ctx, conv = runtime_y_ctx
+    etiqueta = "Retroexcavadora 416E, sáb 19 al dom 20 sept (2 días), 8 hs/día"
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        reserva_activa={"etiqueta": etiqueta, "estado": "tentativa"},
+    )
+    respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "disponible": True,
+                "ofertas": [
+                    {
+                        "ofertaId": "roff_otra",
+                        "modeloId": MODELO_ID,
+                        "desde": "2026-09-19",
+                        "hasta": "2026-09-21",
+                        "montoCotizadoCents": 282_256_000,
+                        "etiqueta": etiqueta,
+                    }
+                ],
+            },
+        )
+    )
+    result = await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": MODELO_ID, "desde": "2026-09-19", "ultimo_dia": "2026-09-20", "dias": 2},
+    )
+    assert "YA TIENE TOMADA" in result["instrucciones"]
+    assert etiqueta in result["instrucciones"]
+    assert "cambiar_reserva_tentativa" in result["instrucciones"]
+
+
+async def test_disponibilidad_sin_reserva_previa_no_avisa_nada(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.get(f"{CRM_URL}/api/bot/disponibilidad").mock(
+        return_value=httpx.Response(200, json={"disponible": True, "ofertas": []})
+    )
+    result = await runtime.execute(
+        "consultar_disponibilidad",
+        {"modelo_id": MODELO_ID, "desde": "2026-09-19", "ultimo_dia": "2026-09-20", "dias": 2},
+    )
+    assert "YA TIENE" not in result["instrucciones"]
 
 
 # -------------------------------------------------------------- cotizar ---

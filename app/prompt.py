@@ -217,6 +217,29 @@ def build_system_prompt(
             "- Ficha actual del lead: " + json.dumps(filled, ensure_ascii=False)
         )
 
+    # 017 — La máquina que el lead YA tiene. Sin esta línea, en el turno
+    # siguiente a reservar el agente no lo sabía y a un "sí, dale" le volvía a
+    # ofrecer la misma máquina.
+    reserva = (context or {}).get("reservaActiva") or {}
+    if reserva.get("etiqueta"):
+        if (reserva.get("estado") or "tentativa") == "tentativa":
+            lines.append(
+                "- Este lead YA TIENE UNA MÁQUINA TOMADA en esta conversación: "
+                f"{reserva['etiqueta']}. La confirma un asesor. NO se la vuelvas "
+                "a ofrecer ni le preguntes si se la dejás tomada: ya la tiene. "
+                "Si te dice 'sí', 'dale' o 'gracias', recordale que ya la tiene "
+                "tomada y que un asesor lo contacta. Si quiere otras fechas u "
+                "otra máquina, consultá disponibilidad y movela con "
+                "cambiar_reserva_tentativa; si quiere cancelar, handoff."
+            )
+        else:
+            lines.append(
+                "- Este lead YA TIENE UNA RESERVA CONFIRMADA por el equipo en "
+                f"esta conversación: {reserva['etiqueta']}. No le ofrezcas "
+                "tomarla de nuevo; cualquier cambio sobre esa reserva lo ve una "
+                "persona: handoff."
+            )
+
     headline = referral_headline
     if not headline:
         # 017 — Vocero expone el origen del anuncio en `ad` (bloque de
