@@ -69,6 +69,8 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                     # 017 — vacío = OpenAI; con valor, cualquier proveedor
                     # compatible (OpenRouter).
                     base_url=settings.openai_base_url or None,
+                    reasoning=settings.openai_reasoning,
+                    fallbacks=settings.openai_fallback_models,
                 ),
                 profile=ProfileProvider(
                     crm,

@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     # proveedor degrada honesta (el agente dice que no pudo escuchar el audio).
     openai_base_url: str = ""
     openai_model: str = "gpt-4o-mini"
+    # 017 — Razonamiento del modelo principal: "" = no se manda nada (el modelo
+    # decide), "off" = apagado, "low" | "medium" | "high" = esfuerzo. Hace falta
+    # porque un turno encadena 2-4 llamadas: un razonador en su modo por
+    # defecto hacía esperar al lead de 30 s a 2 minutos (medido 2026-09-14).
+    openai_reasoning: str = ""
+    # 017 — Modelos de respaldo (CSV, en orden). Si el principal está saturado
+    # o caído, OpenRouter reintenta el MISMO pedido con el siguiente. Vacío =
+    # sin respaldo. Es un parámetro de OpenRouter.
+    openai_fallback_models: str = ""
     # 017 — Modelo que ESCUCHA las notas de voz. Por defecto uno que oye audio
     # nativo por chat, así OpenRouter alcanza para todo. Si acá se pone un
     # modelo de transcripción (whisper-1), se usa la API de OpenAI, que exige

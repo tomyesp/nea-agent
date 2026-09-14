@@ -72,6 +72,35 @@ def uses_transcription_api(model: str) -> bool:
     return any(hint in m for hint in _TRANSCRIPTION_HINTS)
 
 
+#: Valores de OPENAI_REASONING que apagan el razonamiento.
+_APAGADO = frozenset({"off", "false", "0", "no", "apagado", "disabled"})
+_ESFUERZOS = frozenset({"minimal", "low", "medium", "high"})
+
+
+def reasoning_param(raw: str | None) -> dict[str, Any] | None:
+    """OPENAI_REASONING → el parámetro `reasoning` de OpenRouter, o None.
+
+    None = no se manda nada y el modelo usa su modo por defecto. Un valor que
+    no se entiende también es None (con aviso): un typo en una variable no
+    puede tumbar al agente.
+    """
+    valor = (raw or "").strip().lower()
+    if not valor:
+        return None
+    if valor in _APAGADO:
+        return {"enabled": False}
+    if valor in _ESFUERZOS:
+        return {"effort": valor}
+    logger.warning("OPENAI_REASONING=%r no se entiende: se ignora", raw)
+    return None
+
+
+def fallback_models(raw: str | list[str] | None) -> list[str]:
+    """OPENAI_FALLBACK_MODELS (CSV) → lista limpia, en orden y sin vacíos."""
+    partes = raw if isinstance(raw, list) else (raw or "").split(",")
+    return [p.strip() for p in partes if p and p.strip()]
+
+
 class LlmExhausted(Exception):
     """El LLM falló todos los reintentos — el turno debe degradar en silencio."""
 
@@ -110,6 +139,8 @@ class OpenAiLlm:
         model: str,
         audio_model: str = "google/gemini-2.5-flash-lite",
         base_url: str | None = None,
+        reasoning: str | None = None,
+        fallbacks: str | list[str] | None = None,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (OpenRouter). El audio
         # va por chat contra `audio_model` (ver bloque de arriba), así una sola
@@ -117,9 +148,29 @@ class OpenAiLlm:
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
         self._audio_model = audio_model
+        # 017 — Lo que viaja en cada pedido de CONVERSACIÓN (el audio va aparte,
+        # contra su propio modelo): el razonamiento controlado y la lista de
+        # respaldo, con la que OpenRouter reintenta el mismo pedido con el
+        # siguiente modelo si el principal está saturado. Qwen 3.8 Flash lo
+        # sirven dos proveedores y dio un 429 en el banco: sin respaldo, tres
+        # fallos seguidos dejan al lead sin respuesta y la charla pasa a un
+        # humano con motivo "error".
+        self._fallbacks = fallback_models(fallbacks)
+        self._extra_body: dict[str, Any] = {}
+        param = reasoning_param(reasoning)
+        if param is not None:
+            self._extra_body["reasoning"] = param
+        if self._fallbacks:
+            self._extra_body["models"] = [model, *self._fallbacks]
         # Contadores de uso (para el bench de costos del 002): tokens reales
         # reportados por el proveedor, acumulados por instancia.
-        self.usage = {"prompt": 0, "cached": 0, "completion": 0, "llamadas": 0}
+        self.usage = {
+            "prompt": 0,
+            "cached": 0,
+            "completion": 0,
+            "llamadas": 0,
+            "respaldo": 0,
+        }
 
     async def transcribe(
         self, data: bytes, mime: str, filename: str = "audio.ogg"
@@ -215,8 +266,26 @@ class OpenAiLlm:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
                 resp = await self._client.chat.completions.create(
-                    model=self._model, messages=messages, **kwargs
+                    model=self._model,
+                    messages=messages,
+                    extra_body=self._extra_body or None,
+                    **kwargs,
                 )
+                servido = getattr(resp, "model", None)
+                if (
+                    self._fallbacks
+                    and isinstance(servido, str)
+                    and servido
+                    and not servido.startswith(self._model)
+                ):
+                    # Queda en el log para poder medir cuánto se usa el
+                    # respaldo: si es seguido, el principal no está sirviendo.
+                    self.usage["respaldo"] += 1
+                    logger.warning(
+                        "llm: contestó el modelo de respaldo %s (el principal %s no pudo)",
+                        servido,
+                        self._model,
+                    )
                 u = getattr(resp, "usage", None)
                 if u is not None:
                     det = getattr(u, "prompt_tokens_details", None)
