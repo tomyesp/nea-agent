@@ -17,7 +17,12 @@ from zoneinfo import ZoneInfo
 
 from app import media
 from app.config import canonical_identity
-from app.booking_guard import confirm_booking
+from app.booking_guard import (
+    afirma_reserva,
+    alerta_reserva_falsa,
+    confirm_booking,
+    pregunta_segura,
+)
 from app.format import to_whatsapp
 from app.greeting import strip_restart
 from app.crm import CrmConflict, CrmError, canonical_handoff_reason
@@ -28,7 +33,7 @@ from app.stall import ALERTA as STALL_ALERT, racha_vacia, sin_rumbo
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
 from app.state import AppContext, InboundMessage, utcnow
-from app.tools import ToolRuntime, tool_schemas
+from app.tools import ToolRuntime, _pesos, tool_schemas
 
 logger = logging.getLogger("nea.turn")
 
@@ -313,6 +318,13 @@ async def run_turn(
         )
         return TurnResult(handoff="error", silencio="llm_agotado", tools=trace or [])
 
+    # Una reserva que el modelo da por hecha sin que nada se haya reservado no
+    # sale: se le avisa, tiene una vuelta para reservar o corregirse, y si
+    # insiste sale una pregunta de confirmación (app/booking_guard.py).
+    final_text = await _sin_reserva_falsa(
+        ctx, conv.id, identity, messages, runtime, final_text
+    )
+
     # Backstop determinista: al tercer strike el handoff SUCEDE, lo haya
     # llamado el modelo o no (la regla de negocio no depende de su humor).
     if streak >= 3 and runtime.handoff_reason is None:
@@ -381,6 +393,63 @@ async def run_turn(
         handoff=runtime.handoff_reason,
         silencio=None if reply else "sin_texto",
         tools=trace or [],
+    )
+
+
+def _reserva_falsa(texto: str | None, runtime: ToolRuntime) -> str | None:
+    """Qué afirma la respuesta que NO pasó ("reserva" | "movida"), o None."""
+    afirmacion = afirma_reserva(texto)
+    if afirmacion is None or runtime.booking is not None:
+        return None
+    # "Ya la tenés tomada" es verdad si la tomó en un turno anterior. "Te la
+    # moví" no: un cambio que no ocurrió en ESTE turno no ocurrió.
+    if afirmacion == "reserva" and runtime.tiene_reserva:
+        return None
+    return afirmacion
+
+
+async def _sin_reserva_falsa(
+    ctx: AppContext,
+    conv_id: int,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """Pasó en vivo con Qwen: "Listo, te la dejé tomada" sin haber llamado
+    crear_reserva_tentativa. El lead cree tener la máquina y en el calendario
+    no hay nada. El prompt ya lo prohíbe; esto no depende de que lo cumpla."""
+    afirmacion = _reserva_falsa(final_text, runtime)
+    if afirmacion is None:
+        return final_text
+    logger.warning(
+        "turno %s: la respuesta afirma una %s que no ocurrió — no sale; le "
+        "aviso al modelo y le doy una vuelta más",
+        identity,
+        afirmacion,
+    )
+    messages.append(
+        {"role": "system", "content": alerta_reserva_falsa(afirmacion, final_text or "")}
+    )
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        segundo = None
+    if runtime.booking is not None:
+        # Ahora sí reservó: confirm_booking se asegura de que nombre la máquina.
+        return segundo
+    if segundo and segundo.strip() and _reserva_falsa(segundo, runtime) is None:
+        return segundo
+    logger.warning(
+        "turno %s: el modelo volvió a afirmar la %s (o no contestó) — sale la "
+        "pregunta de confirmación armada en código",
+        identity,
+        afirmacion,
+    )
+    ofertas = await ctx.store.get_rental_offers(conv_id)
+    return pregunta_segura(
+        afirmacion, [(o.label, _pesos(o.amount_cents)) for o in ofertas]
     )
 
 

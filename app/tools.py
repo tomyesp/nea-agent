@@ -580,6 +580,12 @@ class ToolRuntime:
         # precio): turn.py verifica que la respuesta nombre esa máquina.
         self.booking: dict[str, Any] | None = None
 
+    @property
+    def tiene_reserva(self) -> bool:
+        """¿El lead tiene una máquina tomada, de antes o de este turno? Si no,
+        una respuesta que diga "ya la tenés tomada" es falsa (turn.py)."""
+        return bool(self.booking or self._reserva_activa)
+
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         result = await self._execute(name, args)
         if self._trace is not None:
@@ -1182,6 +1188,14 @@ class ToolRuntime:
                 # falso cuando el que la tiene es el propio lead, y mandaba al
                 # agente a ofrecer alternativas que no hacían falta.
                 previa = (exc.payload or {}).get("reservaExistente") or {}
+                # El contexto no la traía (se tomó entre medio): desde acá el
+                # turno sabe que el lead SÍ tiene una, y "ya la tenés tomada"
+                # es verdad.
+                if not self._reserva_activa:
+                    self._reserva_activa = {
+                        "estado": "tentativa",
+                        **_reserva_para_llm(previa),
+                    }
                 return {
                     "ok": False,
                     "error": "ya_tiene_reserva",
