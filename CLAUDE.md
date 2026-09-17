@@ -77,6 +77,25 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   pase lo que pase, como `format.py` con el Markdown. Corta solo el reinicio
   (presentación con saludo o abriendo renglón, con texto válido delante); no
   toca al primer contacto ni al agente contestando quién es.
+- **El prompt va en bloques `<xml>` por tarea** (`app/prompt.py`): rol, voz,
+  embudo de 5 etapas, catálogo, tiempos de obra, precios, fechas, reserva,
+  handoff, hostilidad, blindaje, herramientas, nunca, multimedia. El embudo
+  manda sobre el impulso de vender: asesorar primero, recomendar desde el
+  catálogo, completar el equipo SIN precios, y recién después precio, fechas
+  y tomarla. `tests/test_prompt_embudo.py` fija cada regla que costó una
+  prueba real descubrir.
+- **El agente NO escribe primero.** `FOLLOWUP_HOURS=0` por default: el empujón
+  proactivo no se agenda y el worker ni arranca. Un "¿seguís ahí?" cuatro
+  horas después se lee como insistencia (decisión del dueño, 2026-09-17).
+  Con horas > 0 vuelve a encenderse, sin tocar código.
+- **Tres guardas deterministas sobre la respuesta, además del formato y el
+  saludo**: `app/booking_guard.py` (la confirmación nombra la máquina que de
+  verdad quedó tomada, y una reserva afirmada sin reservar no sale),
+  `app/catalog_guard.py` (una marca o modelo que no está en el catálogo del
+  CRM no sale — pasó con "una minicargadora Bobcat" y una "New Holland
+  RG140"). Las tres avisan al modelo con su borrador citado, le dan UNA
+  vuelta más y, si insiste, mandan un texto armado en código. Ninguna
+  depende de que el prompt se cumpla.
 - **El inventario puede no existir.** En Vocero va detrás de la bandera
   `INVENTARIO`, apagada por defecto: esos endpoints responden 404. Se sondea al
   arrancar (`crm.inventory_available()`); sin inventario no se le enseñan al
