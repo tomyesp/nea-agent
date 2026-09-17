@@ -124,13 +124,13 @@ def test_prompt_compone_chasis_y_negocio():
     assert "https://example.com/guia" in system
     assert "route_out" in system
     assert "hostilidad" in system  # el chasis conserva la regla de 3 strikes
-    assert "OJO: el negocio aún no configuró" not in system
+    assert "OJO: el negocio todavía no configuró" not in system
 
 
 def test_prompt_minimo_advierte_falta_de_conocimiento():
     system = build_system_prompt(profile=BusinessProfile(), context=None, conv=_conv())
     assert "Sos Nea" in system
-    assert "OJO: el negocio aún no configuró" in system
+    assert "OJO: el negocio todavía no configuró" in system
     assert "(sin entradas todavía)" in system
 
 

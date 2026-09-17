@@ -104,7 +104,7 @@ def test_una_pregunta_tecnica_se_mira_en_el_catalogo():
     p = _prompt()
     assert "preguntas TÉCNICAS" in p
     assert "no escalando" in p
-    assert "pero primero MIRÁ" in p
+    assert "Pero primero MIRÁ" in p
 
 
 

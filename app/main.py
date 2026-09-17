@@ -96,13 +96,19 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
             )
 
         relay_worker = RelayWorker(c.store, c.settings.crm_webhook_url, c.relay_wake)
-        followup_worker = FollowupWorker(c)
         sender_worker = SenderWorker(c)
         workers = [
             asyncio.create_task(relay_worker.run(), name="relay-worker"),
-            asyncio.create_task(followup_worker.run(), name="followup-worker"),
             asyncio.create_task(sender_worker.run(), name="sender-worker"),
         ]
+        # El empujón proactivo es opcional y viene APAGADO (FOLLOWUP_HOURS=0):
+        # el agente solo responde. Con horas > 0 se enciende el worker.
+        if c.settings.followup_hours > 0:
+            workers.append(
+                asyncio.create_task(FollowupWorker(c).run(), name="followup-worker")
+            )
+        else:
+            logger.info("seguimiento proactivo APAGADO (FOLLOWUP_HOURS=0)")
         logger.info("Nea arriba: relay + followup + sender corriendo")
         try:
             yield

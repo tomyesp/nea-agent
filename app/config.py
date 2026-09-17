@@ -102,7 +102,9 @@ class Settings(BaseSettings):
     # de pruebas en vivo había que cerrarle la puerta a los leads reales.
     tester_wa_ids: str = ""  # CSV; vacía = responde a todos (Constitución V)
     coalesce_seconds: float = 4.0
-    followup_hours: float = 4.0
+    # 0 = el agente NUNCA escribe primero (default desde 2026-09-17). Con un
+    # valor > 0 se habilita UN empujón único a esas horas de silencio.
+    followup_hours: float = 0.0
     # "Escribiendo…" casi inmediato al recibir un mensaje (antes del coalesce).
     typing_delay_seconds: float = 0.5
 

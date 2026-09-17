@@ -23,6 +23,12 @@ from app.booking_guard import (
     confirm_booking,
     pregunta_segura,
 )
+from app.catalog_guard import (
+    PREGUNTA_SEGURA as CATALOGO_PREGUNTA_SEGURA,
+    alerta_maquinas_ajenas,
+    menciones_ajenas,
+    permitido_del_crm,
+)
 from app.format import to_whatsapp
 from app.greeting import strip_restart
 from app.crm import CrmConflict, CrmError, canonical_handoff_reason
@@ -325,6 +331,10 @@ async def run_turn(
         ctx, conv.id, identity, messages, runtime, final_text
     )
 
+    # …y que no nombre una máquina que el negocio no tiene
+    # (app/catalog_guard.py).
+    final_text = await _sin_maquinas_ajenas(ctx, identity, messages, runtime, final_text)
+
     # Backstop determinista: al tercer strike el handoff SUCEDE, lo haya
     # llamado el modelo o no (la regla de negocio no depende de su humor).
     if streak >= 3 and runtime.handoff_reason is None:
@@ -381,7 +391,11 @@ async def run_turn(
     else:
         if runtime.proposed:
             updates["phase"] = "agendando"
-        if sent and not conv.followup_sent:
+        # FOLLOWUP_HOURS <= 0 = el agente NUNCA escribe primero (decisión del
+        # dueño, 2026-09-17: un "¿seguís ahí?" 4 h después se lee como
+        # insistencia). Con 0 ni siquiera se agenda: el que decide cuándo
+        # sigue la charla es el lead.
+        if sent and not conv.followup_sent and settings.followup_hours > 0:
             updates["followup_due_at"] = utcnow() + timedelta(
                 hours=settings.followup_hours
             )
@@ -451,6 +465,46 @@ async def _sin_reserva_falsa(
     return pregunta_segura(
         afirmacion, [(o.label, _pesos(o.amount_cents)) for o in ofertas]
     )
+
+
+async def _sin_maquinas_ajenas(
+    ctx: AppContext,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """Pasó en vivo: recomendó "una minicargadora Bobcat" y una "New Holland
+    RG140". La flota no las tiene y el lead termina pidiéndole al asesor una
+    máquina que no existe."""
+    if not ctx.inventory_enabled or not final_text:
+        return final_text
+    permitido = await permitido_del_crm(ctx)
+    ajenas = menciones_ajenas(final_text, permitido)
+    if not ajenas:
+        return final_text
+    logger.warning(
+        "turno %s: la respuesta nombra lo que el negocio no tiene (%s) — no "
+        "sale; le aviso al modelo y le doy una vuelta más",
+        identity,
+        ", ".join(ajenas),
+    )
+    messages.append(
+        {"role": "system", "content": alerta_maquinas_ajenas(ajenas, final_text)}
+    )
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        segundo = None
+    if segundo and segundo.strip() and not menciones_ajenas(segundo, permitido):
+        return segundo
+    logger.warning(
+        "turno %s: el modelo volvió a nombrar máquinas ajenas (o no contestó) "
+        "— sale la pregunta armada en código",
+        identity,
+    )
+    return CATALOGO_PREGUNTA_SEGURA
 
 
 async def _run_reset(ctx: AppContext, conv: Any, identity: str) -> None:
