@@ -104,6 +104,15 @@ def test_prohibe_marcas_de_memoria():
     assert "buscala en el catálogo ANTES de contestar qué es" in p
 
 
+def test_recomienda_en_vez_de_seguir_preguntando():
+    """En vivo el agente pidió tres veces el tipo de suelo y nunca recomendó
+    nada; al "dale, esa me sirve" contestó "todavía no te recomendé"."""
+    p = _prompt()
+    assert "NUNCA preguntes dos veces lo mismo" in p
+    assert "pasá YA a la etapa 2 con lo que tengas" in p
+    assert "apenas el lead te pida una recomendación" in p
+
+
 def test_no_calcula_cuanto_tarda_la_obra():
     p = _prompt()
     assert "<tiempos_de_obra>" in p
