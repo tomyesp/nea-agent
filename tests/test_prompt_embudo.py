@@ -137,6 +137,27 @@ def test_puede_escribir_y_llamar_herramientas_en_el_mismo_turno():
     assert "llamar herramientas en el mismo turno" in _prompt()
 
 
+def test_recomienda_maquina_con_su_implemento():
+    """RPM alquila la minicargadora con el implemento del trabajo (martillo,
+    hoyadora, zanjeadora…), incluido en la hora. El asesor necesita saber cuál
+    preparar, y un implemento no es otra máquina (2026-09-19)."""
+    p = _prompt()
+    assert "lo que recomendás es máquina + implemento" in p
+    assert "guardalo con update_ficha en `implementos`" in p
+    assert "copialas, no las supongas" in p
+    assert "Un implemento NO es otra máquina" in p
+    assert "la máquina (con su implemento, si lleva)" in p
+
+
+def test_la_ficha_tiene_lugar_para_los_implementos():
+    """maquina_interes se pisa con la etiqueta de la oferta al reservar: el
+    implemento necesita su propio campo."""
+    from app.tools import TOOL_SCHEMAS
+
+    ficha = next(t for t in TOOL_SCHEMAS if t["function"]["name"] == "update_ficha")
+    assert "implementos" in ficha["function"]["parameters"]["properties"]
+
+
 # ------------------------------------------- el agente no escribe primero ---
 
 

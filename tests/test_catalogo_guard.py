@@ -101,6 +101,33 @@ def test_no_se_confunde_con_lo_que_si_existe(texto):
     assert menciones_ajenas(texto, PERMITIDO) == []
 
 
+def test_lo_que_dice_la_ficha_tecnica_tambien_es_catalogo():
+    """El motor y los implementos viven en specs, anidados. Citarlos es lo que
+    pide el prompt: la guarda no puede frenarlo como un modelo inventado."""
+    modelos = [
+        {
+            "nombre": "Minicargadora 252B",
+            "marca": "Caterpillar",
+            "categoria": "Minicargadoras",
+            "specs": {
+                "motor": "Cat 3044C DIT (3.3 L)",
+                "implementos": [
+                    {"nombre": "Martillo hidráulico chico", "modelo": "CAT H55D S"},
+                    {"nombre": "Hoyadora hidráulica", "modelo": "CAT A19B", "unidades": 2},
+                ],
+            },
+        }
+    ]
+    permitido = tokens_del_catalogo(modelos)
+    texto = (
+        "La Minicargadora 252B (motor Cat 3044C) va con el martillo CAT H55D S "
+        "o con la hoyadora A19B."
+    )
+    assert menciones_ajenas(texto, permitido) == []
+    # Lo que NO está en la ficha se sigue frenando.
+    assert "h65d" in menciones_ajenas("Te llevo el martillo H65D.", permitido)
+
+
 def test_sin_catalogo_la_guarda_no_opina():
     """Si el CRM no contesta, no hay fuente de verdad: jamás frenar a ciegas."""
     assert menciones_ajenas("Te recomiendo una Bobcat S450.", set()) == []

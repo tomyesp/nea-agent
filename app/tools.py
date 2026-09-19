@@ -62,6 +62,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "El modelo del catálogo que le interesa, con el nombre EXACTO del catálogo",
                     },
+                    "implementos": {
+                        "type": "string",
+                        "description": (
+                            "Los implementos que van con la máquina para ESTE "
+                            "trabajo, con el nombre EXACTO de specs.implementos "
+                            "(ej. 'Martillo hidráulico chico'). Es lo que el "
+                            "asesor tiene que preparar: maquina_interes se pisa "
+                            "al reservar, este campo no."
+                        ),
+                    },
                     "duracion_estimada": {
                         "type": "string",
                         "description": "Cuántos días/semanas la necesita",

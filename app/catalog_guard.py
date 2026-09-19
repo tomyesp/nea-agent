@@ -62,15 +62,31 @@ def normalizar(texto: str) -> str:
     return "".join(c for c in plano if unicodedata.category(c) != "Mn")
 
 
+def _textos(valor: Any) -> Iterable[str]:
+    """Los textos de un valor de specs, a cualquier profundidad: los
+    implementos viajan como una lista de fichas adentro de la ficha."""
+    if isinstance(valor, str):
+        yield valor
+    elif isinstance(valor, dict):
+        for v in valor.values():
+            yield from _textos(v)
+    elif isinstance(valor, list):
+        for v in valor:
+            yield from _textos(v)
+
+
 def tokens_del_catalogo(modelos: Iterable[dict[str, Any]]) -> set[str]:
     """Todas las palabras que el negocio SÍ puede nombrar: nombres de modelo,
-    marcas y categorías del catálogo."""
+    marcas, categorías, descripciones y specs del catálogo.
+
+    Las specs cuentan: ahí viven el motor ("Cat 3044C") y los implementos
+    ("martillo CAT H55D S"). Sin ellas, citar la ficha tal cual —que es lo que
+    pide el prompt— se frenaba como si fuera un modelo inventado."""
     permitido: set[str] = set()
     for m in modelos or []:
-        for campo in ("nombre", "marca", "categoria", "descripcion"):
-            valor = m.get(campo)
-            if isinstance(valor, str):
-                permitido.update(_PALABRA.findall(normalizar(valor)))
+        for campo in ("nombre", "marca", "categoria", "descripcion", "specs"):
+            for texto in _textos(m.get(campo)):
+                permitido.update(_PALABRA.findall(normalizar(texto)))
     return permitido
 
 
