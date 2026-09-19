@@ -37,6 +37,7 @@ from app.booking_guard import (
     pregunta_segura,
 )
 from app.catalog_guard import (
+    IMPLEMENTO_A_UN_ASESOR,
     PREGUNTA_SEGURA as CATALOGO_PREGUNTA_SEGURA,
     alerta_implemento_ajeno,
     alerta_maquinas_ajenas,
@@ -575,10 +576,14 @@ async def _sin_implemento_ajeno(
         return segundo
     logger.warning(
         "turno %s: el modelo insistió con el implemento ajeno (o no contestó) "
-        "— sale la pregunta armada en código",
+        "— lo toma una persona",
         identity,
     )
-    return CATALOGO_PREGUNTA_SEGURA
+    # Si el modelo no encuentra cómo hacer el trabajo con lo que hay, la obra
+    # supera a la flota: lo ve un asesor (decisión del dueño).
+    if runtime.handoff_reason is None:
+        runtime.handoff_reason = "modelo"
+    return IMPLEMENTO_A_UN_ASESOR
 
 
 async def _sin_falta_de_stock(

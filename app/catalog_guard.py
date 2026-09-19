@@ -282,8 +282,21 @@ def alerta_implemento_ajeno(problemas: list[str], borrador: str) -> str:
         + "\nCada implemento es de la máquina que lo tiene en `specs.implementos` "
         "y de ninguna otra. Reescribí: ofrecé la máquina que SÍ lo lleva, o esa "
         "máquina sin el implemento. Un lead que llega a la obra esperando un "
-        "implemento que no existe es un alquiler que se cae."
+        "implemento que no existe es un alquiler que se cae.\n"
+        "Y si para ESE trabajo no hay máquina en la flota que lo haga —demoler "
+        "en altura, por ejemplo—, no busques la que más se le parece: decíselo "
+        "derecho y llamá handoff en este turno."
     )
+
+
+#: Cuando el modelo insiste con un implemento que esa máquina no lleva, el
+#: turno termina con una persona: decisión del dueño (2026-09-19) para todo lo
+#: que supere lo que pueden hacer las máquinas.
+IMPLEMENTO_A_UN_ASESOR = (
+    "Para ese trabajo no tengo la máquina con ese implemento. Te paso con un "
+    "asesor, que ve con qué equipo se puede resolver. Te responde dentro del "
+    "horario de atención 👍"
+)
 
 
 def alerta_maquinas_ajenas(ajenas: list[str], borrador: str) -> str:

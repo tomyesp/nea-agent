@@ -322,3 +322,37 @@ async def test_la_guarda_de_implementos_mira_el_catalogo_completo(respx_mock):
     limpiar_cache()
     enviados = [json.loads(c.request.content)["text"] for c in routes["messages"].calls]
     assert enviados == ["El martillo va en la Minicargadora 252B; la excavadora demuele con el balde."]
+
+
+async def test_si_insiste_con_el_implemento_ajeno_lo_toma_un_asesor(respx_mock):
+    """Decisión del dueño: lo que supera a la flota (demoler en altura) no se
+    resuelve con la máquina más parecida — lo ve una persona."""
+    from app.catalog_guard import limpiar_cache
+
+    limpiar_cache()
+    falsa = LlmReply(content="La Excavadora 320 DL con martillo hidráulico te demuele eso.")
+    ctx = make_ctx(llm=FakeLLM(replies=[falsa, falsa]))
+    ctx.inventory_enabled = True
+    routes = mock_crm_basics(respx_mock)
+    respx_mock.get(url__startswith=f"{CRM_URL}/api/bot/catalogo").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "modelos": [
+                    CATALOGO["modelos"][0],
+                    {"modeloId": "mmod_mini", "nombre": "Minicargadora 252B",
+                     "specs": {"implementos": [{"nombre": "Martillo hidráulico grande"}]}},
+                ]
+            },
+        )
+    )
+    await run_turn(
+        ctx, IDENTITY,
+        [InboundMessage(wa_message_id="w1", identity=IDENTITY, type="text",
+                        text="demoler una pared de tres pisos")],
+    )
+    await ctx.crm.aclose()
+    limpiar_cache()
+    enviados = [json.loads(c.request.content)["text"] for c in routes["messages"].calls]
+    assert len(enviados) == 1 and "Te paso con un asesor" in enviados[0]
+    assert routes["handoff"].called
