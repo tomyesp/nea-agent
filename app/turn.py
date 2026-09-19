@@ -17,7 +17,13 @@ from zoneinfo import ZoneInfo
 
 from app import media
 from app.config import canonical_identity
-from app.acceso import paso_del_lead
+from app.acceso import (
+    alerta_acceso,
+    entidades_de_acceso,
+    paso_del_lead,
+    pregunta_segura_acceso,
+    promesas_de_acceso,
+)
 from app.booking_guard import (
     afirma_reserva,
     alerta_reserva_falsa,
@@ -339,6 +345,10 @@ async def run_turn(
     # (app/catalog_guard.py).
     final_text = await _sin_maquinas_ajenas(ctx, identity, messages, runtime, final_text)
 
+    # …ni que prometa que entra por el paso lo que el sistema calculó que no
+    # (app/acceso.py).
+    final_text = await _sin_acceso_falso(ctx, identity, messages, runtime, final_text)
+
     # Backstop determinista: al tercer strike el handoff SUCEDE, lo haya
     # llamado el modelo o no (la regla de negocio no depende de su humor).
     if streak >= 3 and runtime.handoff_reason is None:
@@ -509,6 +519,61 @@ async def _sin_maquinas_ajenas(
         identity,
     )
     return CATALOGO_PREGUNTA_SEGURA
+
+
+async def _modelos_para_acceso(ctx: AppContext, runtime: ToolRuntime) -> dict[str, dict[str, Any]]:
+    """Las fichas que vio el modelo en este turno; si no buscó (contesta con lo
+    que vio antes), el catálogo completo."""
+    if runtime.modelos_vistos:
+        return dict(runtime.modelos_vistos)
+    try:
+        data = await ctx.crm.get_catalogo(None)
+    except Exception as exc:  # sin catálogo no hay fuente de verdad: no opino
+        logger.warning("guarda de acceso: catálogo inaccesible (%s) — no opino", exc)
+        return {}
+    return {str(m.get("nombre") or ""): m.get("specs") or {} for m in data.get("modelos") or []}
+
+
+async def _sin_acceso_falso(
+    ctx: AppContext,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """Pasó en vivo con el veredicto en la mano: "entra por tu portón de
+    1,85 m, aunque va justita", con el cucharón de 1,90 m puesto. La máquina
+    se queda en la puerta de la obra."""
+    paso = runtime.ancho_paso
+    if not ctx.inventory_enabled or not final_text or not paso:
+        return final_text
+    entidades = entidades_de_acceso(await _modelos_para_acceso(ctx, runtime), paso)
+    problemas = promesas_de_acceso(final_text, entidades)
+    if not problemas:
+        return final_text
+    logger.warning(
+        "turno %s: la respuesta promete que entra por %.2f m lo que el sistema "
+        "calculó que no (%s) — no sale; le aviso al modelo",
+        identity,
+        paso,
+        " | ".join(problemas),
+    )
+    messages.append({"role": "system", "content": alerta_acceso(problemas, final_text, paso)})
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        segundo = None
+    if segundo and segundo.strip():
+        entidades = entidades_de_acceso(await _modelos_para_acceso(ctx, runtime), paso)
+        if not promesas_de_acceso(segundo, entidades):
+            return segundo
+    logger.warning(
+        "turno %s: el modelo insistió con que entra (o no contestó) — sale la "
+        "pregunta armada en código",
+        identity,
+    )
+    return pregunta_segura_acceso(paso)
 
 
 async def _run_reset(ctx: AppContext, conv: Any, identity: str) -> None:

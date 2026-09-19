@@ -585,6 +585,10 @@ class ToolRuntime:
         # si el modelo no lo manda al buscar, las máquinas vuelven igual con
         # su veredicto de acceso.
         self._ancho_paso = ancho_paso_m
+        # Lo que turn.py necesita para frenar un "entra" que el sistema dijo
+        # que no: con qué paso se calculó y las fichas que vio el modelo.
+        self.paso_usado: float | None = None
+        self.modelos_vistos: dict[str, dict[str, Any]] = {}
         # La máquina que el lead YA tenía tomada al empezar el turno (del
         # contexto del CRM). Ver `_aviso_reserva_existente`.
         self._reserva_activa = reserva_activa or None
@@ -605,6 +609,12 @@ class ToolRuntime:
         # La reserva que quedó tomada o movida en ESTE turno (etiqueta y
         # precio): turn.py verifica que la respuesta nombre esa máquina.
         self.booking: dict[str, Any] | None = None
+
+    @property
+    def ancho_paso(self) -> float | None:
+        """El paso con el que se calculó el acceso en este turno, o el que
+        dijo el lead aunque el modelo no haya buscado."""
+        return self.paso_usado or self._ancho_paso
 
     @property
     def tiene_reserva(self) -> bool:
@@ -718,7 +728,9 @@ class ToolRuntime:
                     "minimo_horas": tarifa.get("minimoHoras") or None,
                 }
             )
+            self.modelos_vistos[str(m.get("nombre") or "")] = m.get("specs") or {}
             if paso:
+                self.paso_usado = paso
                 maquinas[-1]["acceso"] = acceso_de(m.get("specs"), paso)
         aviso = (
             ""

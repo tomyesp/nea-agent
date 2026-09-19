@@ -114,3 +114,106 @@ async def test_sin_paso_no_hay_veredicto(respx_mock):
     out = await runtime.execute("buscar_maquinas", {"consulta": "mini"})
     await ctx.crm.aclose()
     assert "acceso" not in out["maquinas"][0]
+
+
+# --------------------------------------------- la guarda sobre la respuesta ---
+
+import json  # noqa: E402
+
+from app.acceso import entidades_de_acceso, promesas_de_acceso  # noqa: E402
+from app.llm import LlmReply, ToolCall  # noqa: E402
+from app.state import InboundMessage  # noqa: E402
+from app.turn import run_turn  # noqa: E402
+from tests.conftest import FakeLLM, mock_crm_basics  # noqa: E402
+
+FLOTA = {"Minicargadora 252B": MINI, "Excavadora 320 DL": {"otras": "6,65 m"}}
+
+
+@pytest.mark.parametrize(
+    "paso, texto",
+    [
+        # Las que salieron en vivo con Gemini (2026-09-19).
+        (1.85, "Su ancho es de 1,83 m, lo que le permite pasar por tu portón de 1,85 m, "
+               "aunque va a ir bien justo. Para sacar escombros, la equiparíamos con un Cucharón."),
+        (1.5, "La minicargadora tiene 1,83 m, así que entra bien en el pasillo de 1,50 m."),
+        (1.5, "La Excavadora 320 DL debería entrar bien por el pasillo."),
+    ],
+)
+def test_frena_la_promesa_de_que_entra(paso, texto):
+    assert promesas_de_acceso(texto, entidades_de_acceso(FLOTA, paso))
+
+
+@pytest.mark.parametrize(
+    "paso, texto",
+    [
+        # Decir que NO entra, o que no se puede asegurar, es lo correcto.
+        (1.5, "El pasillo mide 1,50 m, lo que significa que la Minicargadora NO entra."),
+        (1.5, "La ficha no trae el ancho de la Excavadora 320 DL, no puedo asegurarte que entre."),
+        (1.5, "No sé si la mini pasa por ahí: que lo vea un asesor."),
+        # Lo que el sistema dijo que entra, entra.
+        (2.2, "La Minicargadora 252B mide 1,83 m, así que entra por tu pasillo de 2,20 m."),
+        (2.2, "La mini entra, pero el rotocultivador no pasa por ese pasillo."),
+        # Sin promesa de acceso no hay nada que frenar.
+        (1.5, "Para esa zanja va la Minicargadora 252B con la zanjeadora."),
+    ],
+)
+def test_deja_pasar_lo_que_es_verdad(paso, texto):
+    assert promesas_de_acceso(texto, entidades_de_acceso(FLOTA, paso)) == []
+
+
+def test_con_el_rotocultivador_a_dos_veinte_no_se_promete():
+    texto = "Con el rotocultivador puesto la mini entra por tu pasillo de 2,20 m."
+    problemas = promesas_de_acceso(texto, entidades_de_acceso(FLOTA, 2.2))
+    assert problemas and "Rotocultivador" in problemas[0]
+
+
+CATALOGO_FLOTA = {
+    "modelos": [
+        {"modeloId": "m1", "nombre": "Minicargadora 252B", "marca": "Caterpillar",
+         "categoria": "Minicargadoras", "specs": MINI},
+    ]
+}
+
+
+async def _turno_con(respx_mock, llm, texto):
+    ctx = make_ctx(llm=llm)
+    ctx.inventory_enabled = True
+    routes = mock_crm_basics(respx_mock)
+    respx_mock.get(url__startswith=f"{CRM_URL}/api/bot/catalogo").mock(
+        return_value=httpx.Response(200, json=CATALOGO_FLOTA)
+    )
+    await run_turn(
+        ctx, IDENTITY,
+        [InboundMessage(wa_message_id="wamid.1", identity=IDENTITY, type="text", text=texto)],
+    )
+    await ctx.crm.aclose()
+    return [json.loads(c.request.content)["text"] for c in routes["messages"].calls]
+
+
+BUSCA = LlmReply(
+    content=None,
+    tool_calls=[ToolCall(id="c1", name="buscar_maquinas", arguments={"consulta": "escombros"})],
+)
+
+
+async def test_el_entra_falso_no_le_llega_al_lead_y_el_modelo_corrige(respx_mock):
+    llm = FakeLLM(
+        replies=[
+            BUSCA,
+            LlmReply(content="La Minicargadora 252B con cucharón entra por tu portón, va justita."),
+            LlmReply(content="Con 1,85 m no te puedo asegurar que entre con el cucharón: que lo vea un asesor."),
+        ]
+    )
+    enviados = await _turno_con(respx_mock, llm, "tengo que sacar escombros, el porton tiene 1,85 m")
+    assert enviados == ["Con 1,85 m no te puedo asegurar que entre con el cucharón: que lo vea un asesor."]
+    alerta = [m["content"] for m in llm.calls[-1]["messages"]
+              if m["role"] == "system" and "NO se envió" in str(m["content"])]
+    assert len(alerta) == 1 and "Cucharón" in alerta[0]
+
+
+async def test_si_insiste_sale_la_pregunta_segura(respx_mock):
+    falsa = LlmReply(content="Tranqui, la mini entra por tu pasillo de 1,50 m.")
+    llm = FakeLLM(replies=[BUSCA, falsa, falsa])
+    enviados = await _turno_con(respx_mock, llm, "se entra por un pasillo de 1,50 m, tengo que sacar escombros")
+    assert len(enviados) == 1
+    assert "no te puedo asegurar" in enviados[0] and "1,50 m" in enviados[0]

@@ -134,3 +134,132 @@ def acceso_de(specs: dict[str, Any] | None, paso: float) -> dict[str, Any]:
             )
     resultado["detalle"] = detalle
     return resultado
+
+
+# ------------------------------------------------ la guarda de la respuesta ---
+#
+# Con el veredicto en la mano, Gemini igual escribió "entra por tu portón de
+# 1,85 m, aunque va justita" con el cucharón de 1,90 m. Igual que la reserva
+# afirmada (booking_guard) o la máquina ajena (catalog_guard): la respuesta que
+# promete que entra lo que el sistema dijo que no, no sale.
+
+_PALABRA = re.compile(r"[a-z0-9]+")
+_AFIRMA = re.compile(
+    r"\b(entra|entran|entraria|entrarian|pasa|pasan|pasaria|pasarian|cabe|caben|"
+    r"le permite pasar|va a pasar|va a entrar|puede pasar|puede entrar|"
+    r"podes pasar|podes entrar|deberia (?:entrar|pasar)|tendria que (?:entrar|pasar))\b"
+)
+#: "no entra", "ni pasa", "no puede pasar": hasta dos palabras entre la
+#: negación y el verbo. Más lejos ya es otra cosa ("no hay drama, la mini
+#: entra").
+_NEGADA = re.compile(r"\b(no|ni|nunca|tampoco)\b(?:\s+\S+){0,2}\s*$")
+#: La duda dicha con todas las letras tampoco es promesa: "no sé si la mini
+#: pasa", "no te puedo asegurar que la máquina entra".
+_DUDA = re.compile(
+    r"\b(no se si|no sabria|no (?:te )?(?:puedo |podria )?(?:asegurar|prometer|garantizar)|"
+    r"hay que ver si|habria que ver si|a confirmar)"
+)
+#: Cortar en frases sin partir "1.134 kg" ni "1,85 m".
+_CLAUSULA = re.compile(r"(?<!\d)[.;!?\n]|[.;!?\n](?!\d)|\bpero\b")
+
+
+def _alias(nombre: str) -> set[str]:
+    """Cómo se nombra una máquina o un implemento en una respuesta: la primera
+    palabra ("minicargadora", "cucharon"), los códigos ("252b", "320") y las
+    palabras largas ("desbrozadora")."""
+    ws = _PALABRA.findall(normalizar(nombre))
+    out = {w for w in ws if any(c.isdigit() for c in w) or len(w) >= 8}
+    if ws:
+        out.add(ws[0])
+        if ws[0].startswith("minicargadora"):
+            out.add("mini")
+        if ws[0].startswith("retroexcavadora"):
+            out.add("retro")
+    return out
+
+
+def entidades_de_acceso(
+    modelos: dict[str, dict[str, Any]], paso: float
+) -> list[tuple[set[str], bool, str]]:
+    """(alias, ¿riesgosa?, detalle) de cada máquina y de cada implemento que
+    no pasa. Riesgosa = no entra, entra justo o la ficha no trae el ancho."""
+    out: list[tuple[set[str], bool, str]] = []
+    for nombre, specs in modelos.items():
+        acceso = acceso_de(specs, paso)
+        out.append((_alias(nombre), acceso["entra"] != "si", f"{nombre}: {acceso['detalle']}"))
+        if acceso["entra"] == "no":
+            continue
+        ancho = metros_de((specs or {}).get("ancho_m")) or 0.0
+        for imp in (specs or {}).get("implementos") or []:
+            if not isinstance(imp, dict):
+                continue
+            ancho_imp = metros_de(imp.get("ancho_m"))
+            if ancho_imp is None or ancho_imp <= ancho or veredicto(paso, ancho_imp) == "si":
+                continue
+            nombre_imp = str(imp.get("nombre") or "")
+            out.append(
+                (
+                    _alias(nombre_imp),
+                    True,
+                    f"{nombre_imp}: mide {en_metros(ancho_imp)}, NO pasa por un paso de {en_metros(paso)}",
+                )
+            )
+    return out
+
+
+def _afirma(clausula: str) -> bool:
+    for m in _AFIRMA.finditer(clausula):
+        antes = clausula[: m.start()]
+        if not _NEGADA.search(antes) and not _DUDA.search(antes):
+            return True
+    return False
+
+
+def promesas_de_acceso(
+    texto: str | None, entidades: list[tuple[set[str], bool, str]]
+) -> list[str]:
+    """Los detalles de lo que la respuesta promete que entra y el sistema dijo
+    que no (o que entra justo, o que no se sabe). Vacío = nada que frenar."""
+    if not texto or not entidades:
+        return []
+    plano = normalizar(texto)
+    nombradas_en_todo = [e for e in entidades if e[0] & set(_PALABRA.findall(plano))]
+    problemas: dict[str, None] = {}
+    for clausula in _CLAUSULA.split(plano):
+        if not clausula or not _afirma(clausula):
+            continue
+        palabras = set(_PALABRA.findall(clausula))
+        aca = [e for e in entidades if e[0] & palabras]
+        # "Lo que le permite pasar por tu portón" no nombra a nadie: habla de
+        # lo que la respuesta venía recomendando.
+        for alias, riesgosa, detalle in aca or nombradas_en_todo:
+            if riesgosa:
+                problemas.setdefault(detalle, None)
+    return list(problemas)
+
+
+_BORRADOR_MAX = 600
+
+
+def alerta_acceso(problemas: list[str], borrador: str, paso: float) -> str:
+    citado = borrador.strip()
+    if len(citado) > _BORRADOR_MAX:
+        citado = citado[:_BORRADOR_MAX] + "…"
+    return (
+        "ALERTA DEL SISTEMA — tu borrador de respuesta NO se envió. Decía: "
+        f"«{citado}». Promete que entra por el paso de {en_metros(paso)} algo "
+        "que el sistema calculó distinto:\n- "
+        + "\n- ".join(problemas)
+        + "\nReescribí sin comparar medidas vos: si no entra, decí que no "
+        "entra; si entra justo o la ficha no trae el ancho, decí que no se "
+        "puede asegurar y que un asesor vea el acceso. Nunca 'entra' ni 'pasa' "
+        "para eso."
+    )
+
+
+def pregunta_segura_acceso(paso: float) -> str:
+    return (
+        f"Con un paso de {en_metros(paso)} no te puedo asegurar que la máquina "
+        "entre: eso lo tiene que ver un asesor en el lugar. ¿Hay otro acceso "
+        "más ancho, o querés que un asesor lo evalúe?"
+    )
