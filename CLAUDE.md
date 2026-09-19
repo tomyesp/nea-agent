@@ -93,9 +93,19 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   verdad quedó tomada, y una reserva afirmada sin reservar no sale),
   `app/catalog_guard.py` (una marca o modelo que no está en el catálogo del
   CRM no sale — pasó con "una minicargadora Bobcat" y una "New Holland
-  RG140"). Las tres avisan al modelo con su borrador citado, le dan UNA
+  RG140"; lo que figura en las specs, anidado o no, SÍ cuenta como catálogo). Las tres avisan al modelo con su borrador citado, le dan UNA
   vuelta más y, si insiste, mandan un texto armado en código. Ninguna
   depende de que el prompt se cumpla.
+- **Los implementos son datos, no código.** RPM alquila la minicargadora con
+  el implemento que pide el trabajo (martillo, hoyadora, zanjeadora…),
+  incluido en la hora. Viven en `specs.implementos` del modelo en el CRM,
+  junto a `implementos_condiciones` y `implementos_cual_elegir`; el prompt
+  solo dice "máquina + implemento" y el campo de ficha `implementos`. Para
+  que el buscador del CRM encuentre la mini, las palabras de obra van en la
+  DESCRIPCIÓN (el buscador no lee specs): en trabajos compartidos con otra
+  máquina (nivelar, zanjas) la descripción tiene que EMPATAR, no ganar —
+  gana solo el que más palabras coincide, y si la mini gana, Nea no ve la
+  motoniveladora para 2 hectáreas.
 - **El inventario puede no existir.** En Vocero va detrás de la bandera
   `INVENTARIO`, apagada por defecto: esos endpoints responden 404. Se sondea al
   arrancar (`crm.inventory_available()`); sin inventario no se le enseñan al
