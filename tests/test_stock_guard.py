@@ -229,3 +229,50 @@ async def test_la_maquina_sin_implementos_lo_dice(respx_mock):
     assert por_nombre["Excavadora 320 DL"].startswith("NINGUNO")
     assert por_nombre["Minicargadora 252B"] is None  # los suyos van en specs
     assert "de ninguna otra" in out["instrucciones"]
+
+
+# ------------------------------------------- el implemento de otra máquina ---
+
+FLOTA_CON_IMPLEMENTOS = {
+    "Excavadora 320 DL": {"capacidad": "Balde: 1 m³"},
+    "Minicargadora 252B": {
+        "implementos": [
+            {"nombre": "Martillo hidráulico grande"},
+            {"nombre": "Hoyadora hidráulica"},
+        ]
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "Para demoler te sirve una excavadora con martillo hidráulico.",
+        "La Excavadora 320 DL con el martillo rompe el ladrillo.",
+        "Te mando la Excavadora 320 DL con una hoyadora para los pozos.",
+    ],
+)
+def test_frena_el_implemento_colgado_a_otra_maquina(texto):
+    from app.catalog_guard import implementos_mal_colgados
+
+    problemas = implementos_mal_colgados(texto, FLOTA_CON_IMPLEMENTOS)
+    assert problemas and "Minicargadora 252B" in problemas[0]
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        # El implemento con SU máquina.
+        "La Minicargadora 252B con el martillo hidráulico grande rompe el contrapiso.",
+        # Las dos nombradas: el martillo es de la mini y se entiende.
+        "Te dejo la Minicargadora 252B con martillo y la Excavadora 320 DL para el volumen.",
+        # Decir que NO lo lleva está bien.
+        "La Excavadora 320 DL no lleva martillo hidráulico: el martillo va en la minicargadora.",
+        # Sin implementos nombrados no hay nada que frenar.
+        "La Excavadora 320 DL excava hasta 6,65 m.",
+    ],
+)
+def test_deja_pasar_el_implemento_bien_puesto(texto):
+    from app.catalog_guard import implementos_mal_colgados
+
+    assert implementos_mal_colgados(texto, FLOTA_CON_IMPLEMENTOS) == []

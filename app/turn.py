@@ -38,7 +38,9 @@ from app.booking_guard import (
 )
 from app.catalog_guard import (
     PREGUNTA_SEGURA as CATALOGO_PREGUNTA_SEGURA,
+    alerta_implemento_ajeno,
     alerta_maquinas_ajenas,
+    implementos_mal_colgados,
     menciones_ajenas,
     permitido_del_crm,
 )
@@ -352,6 +354,10 @@ async def run_turn(
     # (app/catalog_guard.py).
     final_text = await _sin_maquinas_ajenas(ctx, identity, messages, runtime, final_text)
 
+    # …ni que le cuelgue el martillo de la minicargadora a una excavadora
+    # (app/catalog_guard.py).
+    final_text = await _sin_implemento_ajeno(ctx, identity, messages, runtime, final_text)
+
     # …ni que le invente una falta de stock a una máquina que está libre
     # (app/stock_guard.py).
     final_text = await _sin_falta_de_stock(ctx, identity, messages, runtime, final_text)
@@ -526,6 +532,47 @@ async def _sin_maquinas_ajenas(
         return segundo
     logger.warning(
         "turno %s: el modelo volvió a nombrar máquinas ajenas (o no contestó) "
+        "— sale la pregunta armada en código",
+        identity,
+    )
+    return CATALOGO_PREGUNTA_SEGURA
+
+
+async def _sin_implemento_ajeno(
+    ctx: AppContext,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """Pasó en vivo: "para demoler te sirve una excavadora con martillo
+    hidráulico". Los martillos son de la minicargadora."""
+    if not ctx.inventory_enabled or not final_text:
+        return final_text
+    modelos = await _modelos_para_acceso(ctx, runtime)
+    problemas = implementos_mal_colgados(final_text, modelos)
+    if not problemas:
+        return final_text
+    logger.warning(
+        "turno %s: la respuesta le cuelga un implemento ajeno a una máquina "
+        "(%s) — no sale; le aviso al modelo",
+        identity,
+        " | ".join(problemas),
+    )
+    messages.append(
+        {"role": "system", "content": alerta_implemento_ajeno(problemas, final_text)}
+    )
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        segundo = None
+    if segundo and segundo.strip():
+        modelos = await _modelos_para_acceso(ctx, runtime)
+        if not implementos_mal_colgados(segundo, modelos):
+            return segundo
+    logger.warning(
+        "turno %s: el modelo insistió con el implemento ajeno (o no contestó) "
         "— sale la pregunta armada en código",
         identity,
     )

@@ -169,6 +169,55 @@ def menciones_ajenas(texto: str | None, permitido: set[str]) -> list[str]:
     return list(vistas)
 
 
+#: "no lleva martillo", "no viene con hoyadora": decirlo está bien.
+_NO_LLEVA = re.compile(r"\bno\b[^.!?\n]{0,30}\b(lleva|trae|viene|admite|se le pone|usa)\b")
+_FRASE_CORTA = re.compile(r"[^.!?\n]+")
+
+
+def implementos_mal_colgados(
+    texto: str | None, modelos: dict[str, dict[str, Any]]
+) -> list[str]:
+    """Un implemento ofrecido en una máquina que no lo lleva.
+
+    Pasó (2026-09-19): "para demoler te sirve una excavadora con martillo
+    hidráulico" — los dos martillos son de la minicargadora. El lead llega a
+    la obra esperando algo que esa máquina no puede montar.
+    """
+    if not texto or not modelos:
+        return []
+    duenos: dict[str, tuple[set[str], list[str]]] = {}
+    maquinas: list[tuple[set[str], str, bool]] = []
+    for nombre, specs in modelos.items():
+        implementos = (specs or {}).get("implementos") or []
+        maquinas.append((alias_de(nombre), nombre, bool(implementos)))
+        for imp in implementos:
+            if not isinstance(imp, dict) or not imp.get("nombre"):
+                continue
+            nombre_imp = str(imp["nombre"])
+            alias, propietarios = duenos.setdefault(nombre_imp, (alias_de(nombre_imp), []))
+            propietarios.append(nombre)
+    if not duenos:
+        return []
+    problemas: dict[str, None] = {}
+    for frase in _FRASE_CORTA.findall(normalizar(texto)):
+        if _NIEGA.search(frase) or _NO_LLEVA.search(frase):
+            continue
+        palabras = set(_PALABRA.findall(frase))
+        nombradas = [(nombre, tiene) for alias, nombre, tiene in maquinas if alias & palabras]
+        if not nombradas:
+            continue
+        for nombre_imp, (alias_imp, propietarios) in duenos.items():
+            if not (alias_imp & palabras):
+                continue
+            if any(nombre in propietarios for nombre, _ in nombradas):
+                continue  # está nombrada la máquina que SÍ lo lleva
+            ajenas = ", ".join(nombre for nombre, _ in nombradas)
+            problemas.setdefault(
+                f"{nombre_imp} es de {', '.join(propietarios)}; {ajenas} no lo lleva", None
+            )
+    return list(problemas)
+
+
 async def permitido_del_crm(ctx: Any) -> set[str]:
     """El catálogo completo, cacheado. Set vacío = no se pudo saber, y sin
     fuente de verdad la guarda NO opina (jamás frenar por no poder chequear)."""
@@ -193,6 +242,21 @@ def limpiar_cache() -> None:
 
 
 _BORRADOR_MAX = 600
+
+
+def alerta_implemento_ajeno(problemas: list[str], borrador: str) -> str:
+    citado = borrador.strip()
+    if len(citado) > _BORRADOR_MAX:
+        citado = citado[:_BORRADOR_MAX] + "…"
+    return (
+        "ALERTA DEL SISTEMA — tu borrador de respuesta NO se envió. Decía: "
+        f"«{citado}». Le cuelga un implemento a una máquina que no lo lleva:\n- "
+        + "\n- ".join(problemas)
+        + "\nCada implemento es de la máquina que lo tiene en `specs.implementos` "
+        "y de ninguna otra. Reescribí: ofrecé la máquina que SÍ lo lleva, o esa "
+        "máquina sin el implemento. Un lead que llega a la obra esperando un "
+        "implemento que no existe es un alquiler que se cae."
+    )
 
 
 def alerta_maquinas_ajenas(ajenas: list[str], borrador: str) -> str:
