@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.catalog_guard import normalizar
+from app.catalog_guard import alias_de, normalizar
 
 #: Menos margen que esto no se promete: que el asesor vea el acceso.
 MARGEN_M = 0.10
@@ -283,21 +283,6 @@ _DUDA = re.compile(
 _CLAUSULA = re.compile(r"(?<!\d)[.;!?\n]|[.;!?\n](?!\d)|\bpero\b")
 
 
-def _alias(nombre: str) -> set[str]:
-    """Cómo se nombra una máquina o un implemento en una respuesta: la primera
-    palabra ("minicargadora", "cucharon"), los códigos ("252b", "320") y las
-    palabras largas ("desbrozadora")."""
-    ws = _PALABRA.findall(normalizar(nombre))
-    out = {w for w in ws if any(c.isdigit() for c in w) or len(w) >= 8}
-    if ws:
-        out.add(ws[0])
-        if ws[0].startswith("minicargadora"):
-            out.add("mini")
-        if ws[0].startswith("retroexcavadora"):
-            out.add("retro")
-    return out
-
-
 def entidades_de_acceso(
     modelos: dict[str, dict[str, Any]], paso: Paso
 ) -> list[tuple[set[str], bool, str]]:
@@ -306,13 +291,13 @@ def entidades_de_acceso(
     out: list[tuple[set[str], bool, str]] = []
     for nombre, specs in modelos.items():
         acceso = acceso_de(specs, paso)
-        out.append((_alias(nombre), acceso["entra"] != "si", f"{nombre}: {acceso['detalle']}"))
+        out.append((alias_de(nombre), acceso["entra"] != "si", f"{nombre}: {acceso['detalle']}"))
         if acceso["entra"] == "no" or paso.ancho is None:
             continue
         for nombre_imp, ancho_imp, _ in _implementos_que_no_pasan(specs or {}, paso.ancho):
             out.append(
                 (
-                    _alias(nombre_imp),
+                    alias_de(nombre_imp),
                     True,
                     f"{nombre_imp}: mide {en_metros(ancho_imp)}, NO pasa por {paso.describir()}",
                 )

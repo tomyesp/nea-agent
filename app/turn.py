@@ -17,6 +17,11 @@ from zoneinfo import ZoneInfo
 
 from app import media
 from app.config import canonical_identity
+from app.stock_guard import (
+    PREGUNTA_SEGURA as STOCK_PREGUNTA_SEGURA,
+    alerta_stock,
+    stock_inventado,
+)
 from app.acceso import (
     alerta_acceso,
     alto_del_lead,
@@ -347,6 +352,10 @@ async def run_turn(
     # (app/catalog_guard.py).
     final_text = await _sin_maquinas_ajenas(ctx, identity, messages, runtime, final_text)
 
+    # …ni que le invente una falta de stock a una máquina que está libre
+    # (app/stock_guard.py).
+    final_text = await _sin_falta_de_stock(ctx, identity, messages, runtime, final_text)
+
     # …ni que prometa que entra por el paso lo que el sistema calculó que no
     # (app/acceso.py).
     final_text = await _sin_acceso_falso(ctx, identity, messages, runtime, final_text)
@@ -521,6 +530,43 @@ async def _sin_maquinas_ajenas(
         identity,
     )
     return CATALOGO_PREGUNTA_SEGURA
+
+
+async def _sin_falta_de_stock(
+    ctx: AppContext,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """Pasó con un lead real: consultó una máquina, el sistema le contestó con
+    OTRA libre, y le dijo al lead que la primera no estaba disponible. Estaban
+    todas libres."""
+    if not final_text or not runtime.disponibilidad:
+        return final_text
+    problemas = stock_inventado(final_text, runtime.disponibilidad)
+    if not problemas:
+        return final_text
+    logger.warning(
+        "turno %s: la respuesta inventa una falta de stock (%s) — no sale; le "
+        "aviso al modelo",
+        identity,
+        " | ".join(problemas),
+    )
+    messages.append({"role": "system", "content": alerta_stock(problemas, final_text)})
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        segundo = None
+    if segundo and segundo.strip() and not stock_inventado(segundo, runtime.disponibilidad):
+        return segundo
+    logger.warning(
+        "turno %s: el modelo insistió con la falta de stock (o no contestó) — "
+        "sale la disculpa armada en código",
+        identity,
+    )
+    return STOCK_PREGUNTA_SEGURA
 
 
 async def _modelos_para_acceso(ctx: AppContext, runtime: ToolRuntime) -> dict[str, dict[str, Any]]:

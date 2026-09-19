@@ -42,6 +42,7 @@ MARCAS = (
 )
 
 _PALABRA = re.compile(r"[a-z0-9]+")
+_DIGITOS = re.compile(r"\d+")
 #: "800m3", "20hs", "3tn": medidas, no modelos.
 _UNIDAD = re.compile(r"^\d+(m2|m3|mm|cm|km|kg|tn|ton|hs|hp|kw|kva|lts?|min|seg|t|h|m|l)$")
 #: "20x40", "3x2": medidas de terreno.
@@ -75,6 +76,21 @@ def _textos(valor: Any) -> Iterable[str]:
             yield from _textos(v)
 
 
+def alias_de(nombre: str) -> set[str]:
+    """Cómo se nombra una máquina o un implemento en una respuesta: la primera
+    palabra ("minicargadora", "cucharon"), los códigos ("252b", "320") y las
+    palabras largas ("desbrozadora")."""
+    ws = _PALABRA.findall(normalizar(nombre))
+    out = {w for w in ws if any(c.isdigit() for c in w) or len(w) >= 8}
+    if ws:
+        out.add(ws[0])
+        if ws[0].startswith("minicargadora"):
+            out.add("mini")
+        if ws[0].startswith("retroexcavadora"):
+            out.add("retro")
+    return out
+
+
 def tokens_del_catalogo(modelos: Iterable[dict[str, Any]]) -> set[str]:
     """Todas las palabras que el negocio SÍ puede nombrar: nombres de modelo,
     marcas, categorías, descripciones y specs del catálogo.
@@ -87,6 +103,13 @@ def tokens_del_catalogo(modelos: Iterable[dict[str, Any]]) -> set[str]:
         for campo in ("nombre", "marca", "categoria", "descripcion", "specs"):
             for texto in _textos(m.get(campo)):
                 permitido.update(_PALABRA.findall(normalizar(texto)))
+        # Los NÚMEROS de los nombres, aparte: sirven para detectar un modelo
+        # mal escrito ("320L" cuando la máquina es la "320 DL"). Ver
+        # `_codigo_mutado`.
+        nombre = m.get("nombre")
+        if isinstance(nombre, str):
+            for digitos in _DIGITOS.findall(normalizar(nombre)):
+                permitido.add(f"codigo:{digitos}")
     return permitido
 
 
@@ -97,6 +120,21 @@ def _sospechoso(token: str) -> bool:
     letras = sum(c.isalpha() for c in token)
     digitos = sum(c.isdigit() for c in token)
     return letras >= 1 and digitos >= 2
+
+
+def _codigo_mutado(token: str, permitido: set[str]) -> bool:
+    """Un modelo del catálogo escrito mal, disfrazado de medida.
+
+    Pasó con un lead real (2026-09-19): el agente ofreció una "Caterpillar
+    320L" —la máquina es la "Excavadora 320 DL"—, y `_sospechoso` la dejó
+    pasar porque "320l" se lee como "320 litros". Con ese nombre torcido pidió
+    disponibilidad de otra máquina y terminó diciéndole al lead que la 320L no
+    estaba libre. Si los números del token son los de un modelo del catálogo y
+    las letras no coinciden, es ESE modelo mal escrito."""
+    if not any(c.isalpha() for c in token) or not any(c.isdigit() for c in token):
+        return False
+    digitos = _DIGITOS.search(token)
+    return digitos is not None and f"codigo:{digitos.group()}" in permitido
 
 
 def menciones_ajenas(texto: str | None, permitido: set[str]) -> list[str]:
@@ -120,7 +158,9 @@ def menciones_ajenas(texto: str | None, permitido: set[str]) -> list[str]:
             if re.search(rf"(?<!\w){re.escape(marca)}(?!\w)", plana):
                 ajenas.append(marca)
         for token in _PALABRA.findall(plana):
-            if _sospechoso(token) and token not in permitido:
+            if token in permitido:
+                continue
+            if _sospechoso(token) or _codigo_mutado(token, permitido):
                 ajenas.append(token)
     # Sin repetidos y en orden de aparición.
     vistas: dict[str, None] = {}

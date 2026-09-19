@@ -598,6 +598,11 @@ class ToolRuntime:
         # que no: con qué paso se calculó y las fichas que vio el modelo.
         self.paso_usado: Paso | None = None
         self.modelos_vistos: dict[str, dict[str, Any]] = {}
+        # Lo que se consultó de disponibilidad en este turno {nombre: ¿libre?}
+        # y cómo se llama cada modelo_id. Con eso, turn.py frena una falta de
+        # stock inventada (app/stock_guard.py).
+        self.disponibilidad: dict[str, bool] = {}
+        self._nombre_por_id: dict[str, str] = {}
         # La máquina que el lead YA tenía tomada al empezar el turno (del
         # contexto del CRM). Ver `_aviso_reserva_existente`.
         self._reserva_activa = reserva_activa or None
@@ -742,6 +747,8 @@ class ToolRuntime:
                 }
             )
             self.modelos_vistos[str(m.get("nombre") or "")] = m.get("specs") or {}
+            if m.get("modeloId"):
+                self._nombre_por_id[str(m["modeloId"])] = str(m.get("nombre") or "")
             if paso:
                 self.paso_usado = paso
                 maquinas[-1] = ficha_para_el_paso(maquinas[-1], m.get("specs"), paso)
@@ -787,6 +794,21 @@ class ToolRuntime:
             ),
         }
 
+    async def _nombre_de_modelo(self, model_id: str) -> str | None:
+        """Cómo se llama el modelo que se consultó. Si el modelo mandó un id
+        opaco sin haber buscado antes, hay que preguntarle al catálogo."""
+        if model_id in self._nombre_por_id:
+            return self._nombre_por_id[model_id] or None
+        try:
+            data = await self._ctx.crm.get_catalogo(None)
+        except Exception as exc:  # sin catálogo, la guarda no opina
+            logger.warning("tools: no pude nombrar el modelo %s (%s)", model_id, exc)
+            return None
+        for m in data.get("modelos") or []:
+            if m.get("modeloId"):
+                self._nombre_por_id[str(m["modeloId"])] = str(m.get("nombre") or "")
+        return self._nombre_por_id.get(model_id) or None
+
     async def _resolver_modelo(
         self, raw: str
     ) -> tuple[str | None, dict[str, Any] | None]:
@@ -812,6 +834,7 @@ class ToolRuntime:
             modelos = [m for m in data.get("modelos") or [] if m.get("modeloId")]
             if len(modelos) == 1:
                 resuelto = str(modelos[0]["modeloId"])
+                self._nombre_por_id[resuelto] = str(modelos[0].get("nombre") or "")
                 logger.info("tools: modelo %r resuelto por nombre a %s", raw, resuelto)
                 return resuelto, None
             if len(modelos) > 1:
@@ -915,6 +938,16 @@ class ToolRuntime:
             data.get("alternativas") or []
         )
         offers = _offers_from_payload(self._conv.id, raw)
+        # Para la guarda de stock (app/stock_guard.py): qué se consultó de
+        # verdad y qué contestó el sistema. Toda oferta emitida es una máquina
+        # LIBRE, sea la pedida o una alternativa.
+        nombre = await self._nombre_de_modelo(model_id)
+        if nombre:
+            self.disponibilidad[nombre] = disponible
+        for o in offers:
+            suelta = str(o.label or "").split(",")[0].strip()
+            if suelta:
+                self.disponibilidad[suelta] = True
         # Las ofertas de ESTA máquina (y de sus alternativas) reemplazan a las
         # suyas; las de otras máquinas siguen vigentes, igual que en el CRM.
         await self._ctx.store.add_rental_offers(self._conv.id, offers, {model_id})
