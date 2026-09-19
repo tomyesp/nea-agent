@@ -27,7 +27,7 @@ from app.crm import (
     InventoryUnavailable,
     RecentlyTaken,
 )
-from app.acceso import acceso_de, en_metros, metros_de
+from app.acceso import en_metros, ficha_para_el_paso, metros_de
 from app.fechas import parse_instante, rango_de_uso, vista_de_periodo
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, RentalOffer
@@ -731,7 +731,7 @@ class ToolRuntime:
             self.modelos_vistos[str(m.get("nombre") or "")] = m.get("specs") or {}
             if paso:
                 self.paso_usado = paso
-                maquinas[-1]["acceso"] = acceso_de(m.get("specs"), paso)
+                maquinas[-1] = ficha_para_el_paso(maquinas[-1], m.get("specs"), paso)
         aviso = (
             ""
             if coincidio
@@ -763,8 +763,11 @@ class ToolRuntime:
                     f"\nEl lead tiene que pasar por un paso de {en_metros(paso)}. El "
                     "campo `acceso` de cada máquina lo calculó el sistema y "
                     "MANDA sobre cualquier cuenta tuya: 'no' = no la "
-                    "recomiendes para ese acceso; 'justo' o 'sin_dato' = no "
-                    "prometas que entra, que el asesor vea el acceso."
+                    "recomiendes para ese acceso (por eso viene sin ficha); "
+                    "'justo' o 'sin_dato' = no prometas que entra, que el "
+                    "asesor vea el acceso. Cada máquina tiene SU veredicto: "
+                    "no le atribuyas a una lo que dice el de otra. Los "
+                    "implementos que no pasan ya no están en la lista."
                     if paso
                     else ""
                 )

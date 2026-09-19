@@ -217,3 +217,27 @@ async def test_si_insiste_sale_la_pregunta_segura(respx_mock):
     enviados = await _turno_con(respx_mock, llm, "se entra por un pasillo de 1,50 m, tengo que sacar escombros")
     assert len(enviados) == 1
     assert "no te puedo asegurar" in enviados[0] and "1,50 m" in enviados[0]
+
+
+async def test_lo_que_no_entra_llega_sin_ficha_y_sin_implementos_que_no_pasan(respx_mock):
+    """En vivo recomendó la mini para 1,50 m "sin poder asegurar": sin ficha
+    no tiene con qué. Y con 1,85 m el cucharón (1,90) sale de la lista."""
+    catalogo = {"modelos": [{"modeloId": "m1", "nombre": "Minicargadora 252B",
+                             "categoria": "Minicargadoras", "specs": MINI}]}
+    respx_mock.get(url__startswith=f"{CRM_URL}/api/bot/catalogo").mock(
+        return_value=httpx.Response(200, json=catalogo)
+    )
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+
+    no_entra = await ToolRuntime(ctx, conv, "c", ancho_paso_m=1.5).execute(
+        "buscar_maquinas", {"consulta": "mini"})
+    mini = no_entra["maquinas"][0]
+    assert mini["acceso"]["entra"] == "no"
+    assert "specs" not in mini and "precio_por_hora" not in mini
+
+    justo = await ToolRuntime(ctx, conv, "c", ancho_paso_m=1.85).execute(
+        "buscar_maquinas", {"consulta": "mini"})
+    await ctx.crm.aclose()
+    nombres = [i["nombre"] for i in justo["maquinas"][0]["specs"]["implementos"]]
+    assert nombres == ["Zanjeadora"]

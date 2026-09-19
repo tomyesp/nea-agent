@@ -136,6 +136,39 @@ def acceso_de(specs: dict[str, Any] | None, paso: float) -> dict[str, Any]:
     return resultado
 
 
+def ficha_para_el_paso(maquina: dict[str, Any], specs: dict[str, Any] | None, paso: float) -> dict[str, Any]:
+    """Lo que el modelo ve de una máquina cuando el lead dijo por dónde entra.
+
+    Con el veredicto adentro, Gemini igual recomendó la mini para un pasillo
+    de 1,50 m ("no puedo asegurarte que entre"). Lo que no entra le llega sin
+    ficha: sin specs ni implementos no tiene con qué recomendarla. Y los
+    implementos que no pasan salen de la lista."""
+    acceso = acceso_de(specs, paso)
+    if acceso["entra"] == "no":
+        return {
+            "modelo_id": maquina.get("modelo_id"),
+            "nombre": maquina.get("nombre"),
+            "categoria": maquina.get("categoria"),
+            "acceso": acceso,
+        }
+    out = dict(maquina)
+    out["acceso"] = acceso
+    specs = specs or {}
+    ancho = metros_de(specs.get("ancho_m"))
+    implementos = specs.get("implementos")
+    if ancho is not None and isinstance(implementos, list):
+        pasan = [
+            imp
+            for imp in implementos
+            if not isinstance(imp, dict)
+            or (metros_de(imp.get("ancho_m")) or 0.0) <= ancho
+            or veredicto(paso, metros_de(imp.get("ancho_m")) or 0.0) == "si"
+        ]
+        if len(pasan) != len(implementos):
+            out["specs"] = {**specs, "implementos": pasan}
+    return out
+
+
 # ------------------------------------------------ la guarda de la respuesta ---
 #
 # Con el veredicto en la mano, Gemini igual escribió "entra por tu portón de
