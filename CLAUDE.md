@@ -88,14 +88,24 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   proactivo no se agenda y el worker ni arranca. Un "¿seguís ahí?" cuatro
   horas después se lee como insistencia (decisión del dueño, 2026-09-17).
   Con horas > 0 vuelve a encenderse, sin tocar código.
-- **Tres guardas deterministas sobre la respuesta, además del formato y el
+- **Guardas deterministas sobre la respuesta, además del formato y el
   saludo**: `app/booking_guard.py` (la confirmación nombra la máquina que de
   verdad quedó tomada, y una reserva afirmada sin reservar no sale),
   `app/catalog_guard.py` (una marca o modelo que no está en el catálogo del
   CRM no sale — pasó con "una minicargadora Bobcat" y una "New Holland
-  RG140"; lo que figura en las specs, anidado o no, SÍ cuenta como catálogo). Las tres avisan al modelo con su borrador citado, le dan UNA
-  vuelta más y, si insiste, mandan un texto armado en código. Ninguna
-  depende de que el prompt se cumpla.
+  RG140"; lo que figura en las specs, anidado o no, SÍ cuenta como catálogo)
+  y `app/acceso.py` (un "entra" o "pasa" por el pasillo/portón que dijo el
+  lead no sale si el sistema calculó que no entra, que entra justo —menos de
+  10 cm— o que la ficha no trae el ancho). Todas avisan al modelo con su
+  borrador citado, le dan UNA vuelta más y, si insiste, mandan un texto
+  armado en código. Ninguna depende de que el prompt se cumpla.
+- **Si una máquina entra por el paso lo calcula el código**, como el precio.
+  Con el ancho en la ficha y una regla en el prompt, Gemini igual dijo
+  "mide 1,83 m, así que entra en el pasillo de 1,50 m". `app/acceso.py` saca
+  el paso de los mensajes del lead (o de `ancho_paso_m`), compara contra
+  `specs.ancho_m` y el `ancho_m` de los implementos más anchos, y
+  `buscar_maquinas` manda lo que no entra SIN ficha (sin specs no hay con
+  qué recomendarla) y saca de la lista los implementos que no pasan.
 - **Los implementos son datos, no código.** RPM alquila la minicargadora con
   el implemento que pide el trabajo (martillo, hoyadora, zanjeadora…),
   incluido en la hora. Viven en `specs.implementos` del modelo en el CRM,
