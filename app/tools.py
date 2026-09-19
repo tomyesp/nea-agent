@@ -749,6 +749,14 @@ class ToolRuntime:
             self.modelos_vistos[str(m.get("nombre") or "")] = m.get("specs") or {}
             if m.get("modeloId"):
                 self._nombre_por_id[str(m["modeloId"])] = str(m.get("nombre") or "")
+            # Dicho con todas las letras: con el martillo de la minicargadora
+            # en el catálogo, el modelo se lo colgó a una excavadora que no lo
+            # lleva ("excavadora con martillo hidráulico", 2026-09-19).
+            if not (m.get("specs") or {}).get("implementos"):
+                maquinas[-1]["implementos"] = (
+                    "NINGUNO: esta máquina no lleva implementos intercambiables, "
+                    "trabaja con lo que trae de fábrica"
+                )
             if paso:
                 self.paso_usado = paso
                 maquinas[-1] = ficha_para_el_paso(maquinas[-1], m.get("specs"), paso)
@@ -778,7 +786,12 @@ class ToolRuntime:
                 "el traslado nunca está incluido y se cotiza aparte.\n"
                 "'unidades_en_flota' NO es disponibilidad: para saber si está "
                 "libre en unas fechas, consultar_disponibilidad, y una por una "
-                "— que una esté tomada no dice NADA de las otras."
+                "— que una esté tomada no dice NADA de las otras.\n"
+                "Los IMPLEMENTOS (martillo, hoyadora, zanjeadora…) son de la "
+                "máquina que los lista en `specs.implementos`, y de ninguna "
+                "otra: si dice implementos NINGUNO, esa máquina no lleva. Si "
+                "el trabajo necesita un implemento, ofrecé la máquina que lo "
+                "tiene."
                 + (
                     f"\nEl lead tiene que pasar por {paso.describir()}. El "
                     "campo `acceso` de cada máquina lo calculó el sistema y "

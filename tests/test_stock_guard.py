@@ -202,3 +202,30 @@ async def test_si_insiste_sale_la_disculpa_armada(respx_mock):
     llm = FakeLLM(replies=[CONSULTA, falsa, falsa])
     enviados = await _turno(respx_mock, llm)
     assert len(enviados) == 1 and "Dejame verificar bien la disponibilidad" in enviados[0]
+
+
+async def test_la_maquina_sin_implementos_lo_dice(respx_mock):
+    """Con el martillo de la mini en el catálogo, el modelo se lo colgó a una
+    excavadora. La ficha de cada máquina lo dice con todas las letras."""
+    from app.tools import ToolRuntime
+
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    respx_mock.get(url__startswith=f"{CRM_URL}/api/bot/catalogo").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "modelos": [
+                    CATALOGO["modelos"][0],
+                    {"modeloId": "mmod_mini", "nombre": "Minicargadora 252B",
+                     "specs": {"implementos": [{"nombre": "Martillo hidráulico chico"}]}},
+                ]
+            },
+        )
+    )
+    out = await ToolRuntime(ctx, conv, "c").execute("buscar_maquinas", {"consulta": "martillo"})
+    await ctx.crm.aclose()
+    por_nombre = {m["nombre"]: m.get("implementos") for m in out["maquinas"]}
+    assert por_nombre["Excavadora 320 DL"].startswith("NINGUNO")
+    assert por_nombre["Minicargadora 252B"] is None  # los suyos van en specs
+    assert "de ninguna otra" in out["instrucciones"]
