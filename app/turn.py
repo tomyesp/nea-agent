@@ -42,6 +42,7 @@ from app.catalog_guard import (
     alerta_maquinas_ajenas,
     implementos_mal_colgados,
     menciones_ajenas,
+    modelos_del_crm,
     permitido_del_crm,
 )
 from app.format import to_whatsapp
@@ -549,7 +550,10 @@ async def _sin_implemento_ajeno(
     hidráulico". Los martillos son de la minicargadora."""
     if not ctx.inventory_enabled or not final_text:
         return final_text
-    modelos = await _modelos_para_acceso(ctx, runtime)
+    # El catálogo COMPLETO, no lo que se buscó en este turno: si el modelo
+    # buscó "grúa para demoler", con esas fichas nadie sabe de quién es el
+    # martillo.
+    modelos = await modelos_del_crm(ctx)
     problemas = implementos_mal_colgados(final_text, modelos)
     if not problemas:
         return final_text
@@ -567,10 +571,8 @@ async def _sin_implemento_ajeno(
     except LlmExhausted as exc:
         logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
         segundo = None
-    if segundo and segundo.strip():
-        modelos = await _modelos_para_acceso(ctx, runtime)
-        if not implementos_mal_colgados(segundo, modelos):
-            return segundo
+    if segundo and segundo.strip() and not implementos_mal_colgados(segundo, modelos):
+        return segundo
     logger.warning(
         "turno %s: el modelo insistió con el implemento ajeno (o no contestó) "
         "— sale la pregunta armada en código",

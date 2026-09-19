@@ -28,7 +28,7 @@ logger = logging.getLogger("nea.catalog_guard")
 #: El catálogo cambia poco; preguntarlo en cada turno sería un viaje de red al
 #: pedo. Diez minutos alcanza para que un alta nueva entre sola.
 CACHE_TTL = 600.0
-_cache: dict[str, Any] = {"permitido": None, "at": 0.0}
+_cache: dict[str, Any] = {"permitido": None, "at": 0.0, "modelos": None, "modelos_at": 0.0}
 
 #: Marcas de maquinaria que el modelo conoce de memoria. Si alguna NO está en
 #: el catálogo de este negocio y aparece en la respuesta, es invención.
@@ -236,9 +236,36 @@ async def permitido_del_crm(ctx: Any) -> set[str]:
     return permitido
 
 
+async def modelos_del_crm(ctx: Any) -> dict[str, dict[str, Any]]:
+    """{nombre: specs} de TODO el catálogo, cacheado.
+
+    De quién es un implemento no depende de lo que el modelo haya buscado en
+    este turno: buscando "grúa para demoler" el catálogo devuelve las grúas, y
+    con eso no hay forma de saber que el martillo es de la minicargadora."""
+    ahora = time.monotonic()
+    if _cache["modelos"] is not None and (ahora - _cache["modelos_at"]) < CACHE_TTL:
+        return _cache["modelos"]
+    try:
+        data = await ctx.crm.get_catalogo(None)
+    except Exception as exc:
+        logger.warning("catálogo inaccesible para la guarda (%s) — no opino", exc)
+        return {}
+    modelos = {
+        str(m.get("nombre") or ""): (m.get("specs") or {})
+        for m in (data or {}).get("modelos") or []
+        if m.get("nombre")
+    }
+    if modelos:
+        _cache["modelos"] = modelos
+        _cache["modelos_at"] = ahora
+    return modelos
+
+
 def limpiar_cache() -> None:
     _cache["permitido"] = None
     _cache["at"] = 0.0
+    _cache["modelos"] = None
+    _cache["modelos_at"] = 0.0
 
 
 _BORRADOR_MAX = 600

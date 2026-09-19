@@ -276,3 +276,49 @@ def test_deja_pasar_el_implemento_bien_puesto(texto):
     from app.catalog_guard import implementos_mal_colgados
 
     assert implementos_mal_colgados(texto, FLOTA_CON_IMPLEMENTOS) == []
+
+
+async def test_la_guarda_de_implementos_mira_el_catalogo_completo(respx_mock):
+    """Buscando "grúa para demoler" volvían solo las grúas, y con eso nadie
+    sabía que el martillo es de la minicargadora: pasó en vivo."""
+    from app.catalog_guard import limpiar_cache
+
+    limpiar_cache()
+    ctx = make_ctx(
+        llm=FakeLLM(
+            replies=[
+                LlmReply(
+                    content=None,
+                    tool_calls=[ToolCall(id="c1", name="buscar_maquinas",
+                                         arguments={"consulta": "grua para demoler"})],
+                ),
+                LlmReply(content="Te recomiendo la Excavadora 320 DL con martillo hidráulico."),
+                LlmReply(content="El martillo va en la Minicargadora 252B; la excavadora demuele con el balde."),
+            ]
+        )
+    )
+    ctx.inventory_enabled = True
+    routes = mock_crm_basics(respx_mock)
+    completo = {
+        "modelos": [
+            CATALOGO["modelos"][0],
+            {"modeloId": "mmod_mini", "nombre": "Minicargadora 252B",
+             "specs": {"implementos": [{"nombre": "Martillo hidráulico grande"}]}},
+        ]
+    }
+
+    def catalogo(request):
+        q = request.url.params.get("q") or ""
+        if "grua" in q:  # la búsqueda del modelo NO trae la mini
+            return httpx.Response(200, json={"modelos": []})
+        return httpx.Response(200, json=completo)
+
+    respx_mock.get(url__startswith=f"{CRM_URL}/api/bot/catalogo").mock(side_effect=catalogo)
+    await run_turn(
+        ctx, IDENTITY,
+        [InboundMessage(wa_message_id="w1", identity=IDENTITY, type="text", text="demoler paredes")],
+    )
+    await ctx.crm.aclose()
+    limpiar_cache()
+    enviados = [json.loads(c.request.content)["text"] for c in routes["messages"].calls]
+    assert enviados == ["El martillo va en la Minicargadora 252B; la excavadora demuele con el balde."]
