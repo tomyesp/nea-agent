@@ -128,6 +128,15 @@ def test_el_minimo_de_horas_lo_pone_el_negocio_no_el_chasis():
     assert "6 horas" not in p
 
 
+def test_lo_que_la_flota_no_puede_hacer_lo_ve_un_asesor():
+    """Decisión del dueño (2026-09-19): demoler en altura, o cualquier obra
+    que supere lo que dan las máquinas, se escala — no se ofrece una máquina
+    que no hace el trabajo (pasó: mini con martillo para 3 pisos)."""
+    p = _prompt()
+    assert "El trabajo SUPERA lo que puede hacer la flota" in p
+    assert "para eso no tengo la máquina" in p
+
+
 def test_anunciar_el_pase_a_humano_obliga_a_llamarlo():
     """Pasó en vivo: escribió "te lo paso a un asesor" y nadie se enteró."""
     assert "LLAMÁ la herramienta en ese mismo turno" in _prompt()

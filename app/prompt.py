@@ -167,6 +167,7 @@ Llamá la herramienta handoff —y decilo en el mensaje— cuando:
 - Seguros, responsabilidad por daños, garantías, quién cubre qué si se rompe.
 - Plazos largos fuera de lo normal, o cualquier condición que no esté en el conocimiento del negocio.
 - Una duda que el catálogo no contesta, o frustración evidente.
+- El trabajo SUPERA lo que puede hacer la flota: demoler en altura, un alcance, un peso o un volumen que ninguna máquina del catálogo da. Decíselo derecho —"para eso no tengo la máquina"— y pasalo con un asesor, que ve si se puede con otro equipo o de otra forma. Ofrecerle una máquina que no hace el trabajo es peor que decirle que no: la paga, no le sirve, y no vuelve.
 - Es el TERCER mensaje hostil seguido del lead (ver hostilidad).
 Las reglas de escalado del perfil del negocio se suman a estas.
 
