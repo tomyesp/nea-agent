@@ -96,7 +96,11 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   RG140"; lo que figura en las specs, anidado o no, SÍ cuenta como catálogo)
   y `app/acceso.py` (un "entra" o "pasa" por el pasillo/portón que dijo el
   lead no sale si el sistema calculó que no entra, que entra justo —menos de
-  10 cm— o que la ficha no trae el ancho). Todas avisan al modelo con su
+  10 cm— o que la ficha no trae el ancho), más dos del mismo palo:
+  `implementos_mal_colgados` en catalog_guard (el martillo de la
+  minicargadora ofrecido en una excavadora) y `app/stock_guard.py` ("esa
+  máquina no está disponible" solo si `consultar_disponibilidad` lo dijo de
+  ESA máquina en este turno; sin ninguna consulta, no opina). Todas avisan al modelo con su
   borrador citado, le dan UNA vuelta más y, si insiste, mandan un texto
   armado en código. Ninguna depende de que el prompt se cumpla.
 - **Si una máquina entra por el paso lo calcula el código**, como el precio.
