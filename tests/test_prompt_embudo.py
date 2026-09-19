@@ -156,7 +156,8 @@ def test_compara_el_paso_con_el_ancho_antes_de_recomendar():
     entra bien en el pasillo de 1,50 m que tenés"."""
     p = _prompt()
     assert "¿ENTRA?" in p
-    assert "Si el paso es MÁS ANGOSTO que lo que pide la máquina, esa máquina NO entra" in p
+    assert "NO compares medidas vos" in p
+    assert "'no' = esa máquina NO entra" in p
     assert "Si ninguna del catálogo entra" in p
 
 

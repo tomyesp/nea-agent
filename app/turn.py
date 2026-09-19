@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from app import media
 from app.config import canonical_identity
+from app.acceso import paso_del_lead
 from app.booking_guard import (
     afirma_reserva,
     alerta_reserva_falsa,
@@ -309,6 +310,9 @@ async def run_turn(
         profile=profile,
         trace=trace,
         reserva_activa=context.get("reservaActiva"),
+        # Si el lead dijo por dónde tiene que pasar la máquina, el veredicto
+        # de acceso lo calcula el código (app/acceso.py), no el modelo.
+        ancho_paso_m=paso_del_lead(del_lead),
     )
     try:
         final_text = await _tool_loop(ctx, messages, runtime)

@@ -27,6 +27,7 @@ from app.crm import (
     InventoryUnavailable,
     RecentlyTaken,
 )
+from app.acceso import acceso_de, en_metros, metros_de
 from app.fechas import parse_instante, rango_de_uso, vista_de_periodo
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, RentalOffer
@@ -136,7 +137,17 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             "'pala', 'bobcat', 'grúa', 'mover tierra'). Vacío = "
                             "catálogo completo."
                         ),
-                    }
+                    },
+                    "ancho_paso_m": {
+                        "type": "number",
+                        "description": (
+                            "Si el lead dijo el ancho del paso por donde tiene "
+                            "que entrar la máquina (pasillo, portón, entrada), "
+                            "en METROS: 1,50 m → 1.5; 90 cm → 0.9. Cada máquina "
+                            "vuelve con `acceso`: si entra o no, calculado por "
+                            "el sistema. No compares medidas vos."
+                        ),
+                    },
                 },
             },
         },
@@ -567,8 +578,13 @@ class ToolRuntime:
         profile: BusinessProfile | None = None,
         trace: list[dict[str, Any]] | None = None,
         reserva_activa: dict[str, Any] | None = None,
+        ancho_paso_m: float | None = None,
     ) -> None:
         self._ctx = ctx
+        # El ancho del paso que dijo el lead en sus mensajes (app/acceso.py):
+        # si el modelo no lo manda al buscar, las máquinas vuelven igual con
+        # su veredicto de acceso.
+        self._ancho_paso = ancho_paso_m
         # La máquina que el lead YA tenía tomada al empezar el turno (del
         # contexto del CRM). Ver `_aviso_reserva_existente`.
         self._reserva_activa = reserva_activa or None
@@ -682,6 +698,7 @@ class ToolRuntime:
                     "derecho y no nombres ninguna máquina."
                 ),
             }
+        paso = metros_de(args.get("ancho_paso_m")) or self._ancho_paso
         maquinas = []
         for m in modelos:
             tarifa = m.get("tarifa") or {}
@@ -701,6 +718,8 @@ class ToolRuntime:
                     "minimo_horas": tarifa.get("minimoHoras") or None,
                 }
             )
+            if paso:
+                maquinas[-1]["acceso"] = acceso_de(m.get("specs"), paso)
         aviso = (
             ""
             if coincidio
@@ -728,6 +747,15 @@ class ToolRuntime:
                 "'unidades_en_flota' NO es disponibilidad: para saber si está "
                 "libre en unas fechas, consultar_disponibilidad, y una por una "
                 "— que una esté tomada no dice NADA de las otras."
+                + (
+                    f"\nEl lead tiene que pasar por un paso de {en_metros(paso)}. El "
+                    "campo `acceso` de cada máquina lo calculó el sistema y "
+                    "MANDA sobre cualquier cuenta tuya: 'no' = no la "
+                    "recomiendes para ese acceso; 'justo' o 'sin_dato' = no "
+                    "prometas que entra, que el asesor vea el acceso."
+                    if paso
+                    else ""
+                )
             ),
         }
 
