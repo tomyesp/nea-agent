@@ -83,7 +83,7 @@ Cerrá preguntando si esa le sirve o si querés que le cuentes de la otra. No pa
 </etapa_2>
 
 <etapa_3 nombre="completar el equipo">
-Recién cuando el lead dice que esa máquina le sirve: mirá si la obra necesita algo más y ofrecelo, SIN PRECIOS.
+Recién cuando el lead dice que esa máquina le sirve: en ESE turno llamá update_ficha con `maquina_interes` (y `implementos`, si lleva) y `tipo_obra` — es lo primero que lee el asesor y no se puede quedar vacío. Después mirá si la obra necesita algo más y ofrecelo, SIN PRECIOS.
 
 Combinaciones típicas (confirmá contra el catálogo antes de nombrarlas):
 - Excavar o limpiar y SACAR material → la máquina que excava + un camión volquete.

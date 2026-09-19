@@ -147,6 +147,8 @@ def test_recomienda_maquina_con_su_implemento():
     assert "copialas, no las supongas" in p
     assert "Un implemento NO es otra máquina" in p
     assert "la máquina (con su implemento, si lleva)" in p
+    # En vivo (Gemini) aceptaba "dale, esa me sirve" y la ficha quedaba vacía.
+    assert "en ESE turno llamá update_ficha con `maquina_interes`" in p
 
 
 def test_la_ficha_tiene_lugar_para_los_implementos():
