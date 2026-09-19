@@ -151,6 +151,15 @@ def test_recomienda_maquina_con_su_implemento():
     assert "en ESE turno llamá update_ficha con `maquina_interes`" in p
 
 
+def test_compara_el_paso_con_el_ancho_antes_de_recomendar():
+    """En vivo (Gemini, 2026-09-19): "la minicargadora mide 1,83 m, así que
+    entra bien en el pasillo de 1,50 m que tenés"."""
+    p = _prompt()
+    assert "¿ENTRA?" in p
+    assert "Si el paso es MÁS ANGOSTO que lo que pide la máquina, esa máquina NO entra" in p
+    assert "Si ninguna del catálogo entra" in p
+
+
 def test_la_ficha_tiene_lugar_para_los_implementos():
     """maquina_interes se pisa con la etiqueta de la oferta al reservar: el
     implemento necesita su propio campo."""
