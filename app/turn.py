@@ -19,6 +19,7 @@ from app import media
 from app.config import canonical_identity
 from app.acceso import (
     alerta_acceso,
+    alto_del_lead,
     entidades_de_acceso,
     paso_del_lead,
     pregunta_segura_acceso,
@@ -319,6 +320,7 @@ async def run_turn(
         # Si el lead dijo por dónde tiene que pasar la máquina, el veredicto
         # de acceso lo calcula el código (app/acceso.py), no el modelo.
         ancho_paso_m=paso_del_lead(del_lead),
+        alto_paso_m=alto_del_lead(del_lead),
     )
     try:
         final_text = await _tool_loop(ctx, messages, runtime)
@@ -544,7 +546,7 @@ async def _sin_acceso_falso(
     """Pasó en vivo con el veredicto en la mano: "entra por tu portón de
     1,85 m, aunque va justita", con el cucharón de 1,90 m puesto. La máquina
     se queda en la puerta de la obra."""
-    paso = runtime.ancho_paso
+    paso = runtime.paso
     if not ctx.inventory_enabled or not final_text or not paso:
         return final_text
     entidades = entidades_de_acceso(await _modelos_para_acceso(ctx, runtime), paso)
@@ -552,10 +554,10 @@ async def _sin_acceso_falso(
     if not problemas:
         return final_text
     logger.warning(
-        "turno %s: la respuesta promete que entra por %.2f m lo que el sistema "
+        "turno %s: la respuesta promete que entra por %s lo que el sistema "
         "calculó que no (%s) — no sale; le aviso al modelo",
         identity,
-        paso,
+        paso.describir(),
         " | ".join(problemas),
     )
     messages.append({"role": "system", "content": alerta_acceso(problemas, final_text, paso)})

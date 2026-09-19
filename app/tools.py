@@ -27,7 +27,7 @@ from app.crm import (
     InventoryUnavailable,
     RecentlyTaken,
 )
-from app.acceso import en_metros, ficha_para_el_paso, metros_de
+from app.acceso import Paso, ficha_para_el_paso, metros_de
 from app.fechas import parse_instante, rango_de_uso, vista_de_periodo
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, RentalOffer
@@ -146,6 +146,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             "en METROS: 1,50 m → 1.5; 90 cm → 0.9. Cada máquina "
                             "vuelve con `acceso`: si entra o no, calculado por "
                             "el sistema. No compares medidas vos."
+                        ),
+                    },
+                    "alto_paso_m": {
+                        "type": "number",
+                        "description": (
+                            "Si el lead dijo el ALTO libre por donde pasa la "
+                            "máquina (portón, techo, cables), en METROS: "
+                            "2,20 m → 2.2. Va al mismo `acceso`."
                         ),
                     },
                 },
@@ -579,15 +587,16 @@ class ToolRuntime:
         trace: list[dict[str, Any]] | None = None,
         reserva_activa: dict[str, Any] | None = None,
         ancho_paso_m: float | None = None,
+        alto_paso_m: float | None = None,
     ) -> None:
         self._ctx = ctx
-        # El ancho del paso que dijo el lead en sus mensajes (app/acceso.py):
-        # si el modelo no lo manda al buscar, las máquinas vuelven igual con
-        # su veredicto de acceso.
-        self._ancho_paso = ancho_paso_m
+        # El paso (ancho y/o alto) que dijo el lead en sus mensajes
+        # (app/acceso.py): si el modelo no lo manda al buscar, las máquinas
+        # vuelven igual con su veredicto de acceso.
+        self._paso_del_lead = Paso(ancho=ancho_paso_m, alto=alto_paso_m)
         # Lo que turn.py necesita para frenar un "entra" que el sistema dijo
         # que no: con qué paso se calculó y las fichas que vio el modelo.
-        self.paso_usado: float | None = None
+        self.paso_usado: Paso | None = None
         self.modelos_vistos: dict[str, dict[str, Any]] = {}
         # La máquina que el lead YA tenía tomada al empezar el turno (del
         # contexto del CRM). Ver `_aviso_reserva_existente`.
@@ -611,10 +620,10 @@ class ToolRuntime:
         self.booking: dict[str, Any] | None = None
 
     @property
-    def ancho_paso(self) -> float | None:
+    def paso(self) -> Paso:
         """El paso con el que se calculó el acceso en este turno, o el que
-        dijo el lead aunque el modelo no haya buscado."""
-        return self.paso_usado or self._ancho_paso
+        dijo el lead aunque el modelo no haya buscado. Vacío = no hay paso."""
+        return self.paso_usado or self._paso_del_lead
 
     @property
     def tiene_reserva(self) -> bool:
@@ -708,7 +717,11 @@ class ToolRuntime:
                     "derecho y no nombres ninguna máquina."
                 ),
             }
-        paso = metros_de(args.get("ancho_paso_m")) or self._ancho_paso
+        # La medida que mande el modelo gana a la que se leyó en los mensajes.
+        paso = Paso(
+            ancho=metros_de(args.get("ancho_paso_m")) or self._paso_del_lead.ancho,
+            alto=metros_de(args.get("alto_paso_m")) or self._paso_del_lead.alto,
+        )
         maquinas = []
         for m in modelos:
             tarifa = m.get("tarifa") or {}
@@ -760,7 +773,7 @@ class ToolRuntime:
                 "libre en unas fechas, consultar_disponibilidad, y una por una "
                 "— que una esté tomada no dice NADA de las otras."
                 + (
-                    f"\nEl lead tiene que pasar por un paso de {en_metros(paso)}. El "
+                    f"\nEl lead tiene que pasar por {paso.describir()}. El "
                     "campo `acceso` de cada máquina lo calculó el sistema y "
                     "MANDA sobre cualquier cuenta tuya: 'no' = no la "
                     "recomiendes para ese acceso (por eso viene sin ficha); "

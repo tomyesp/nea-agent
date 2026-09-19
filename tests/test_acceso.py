@@ -9,12 +9,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.acceso import acceso_de, paso_del_lead, veredicto
+from app.acceso import Paso, acceso_de, alto_del_lead, paso_del_lead, veredicto
 from app.tools import ToolRuntime
 from tests.conftest import CRM_URL, IDENTITY, make_ctx
 
 MINI = {
     "ancho_m": 1.83,
+    "alto_m": 2.06,
     "implementos": [
         {"nombre": "Cucharón", "ancho_m": 1.90},
         {"nombre": "Zanjeadora"},
@@ -50,24 +51,24 @@ def test_el_margen_chico_no_se_promete():
 
 
 def test_la_mini_no_entra_por_un_pasillo_de_un_metro_y_medio():
-    a = acceso_de(MINI, 1.5)
+    a = acceso_de(MINI, Paso(ancho=1.5))
     assert a["entra"] == "no"
     assert "NO ENTRA" in a["detalle"] and "1,83 m" in a["detalle"]
 
 
 def test_con_un_implemento_mas_ancho_manda_el_implemento():
     """Portón de 1,85 m: la mini pasa justo; con el cucharón (1,90 m), no."""
-    a = acceso_de(MINI, 1.85)
+    a = acceso_de(MINI, Paso(ancho=1.85))
     assert a["entra"] == "justo"
     assert any("Cucharón" in x and "NO pasa" in x for x in a["implementos_que_no_pasan"])
 
-    b = acceso_de(MINI, 2.20)
+    b = acceso_de(MINI, Paso(ancho=2.20))
     assert b["entra"] == "si"
     assert b["implementos_que_no_pasan"] == ["Rotocultivador / desbrozadora (2,27 m): NO pasa"]
 
 
 def test_sin_ancho_en_la_ficha_no_se_promete_nada():
-    a = acceso_de({"otras": "Profundidad 6,65 m"}, 1.5)
+    a = acceso_de({"otras": "Profundidad 6,65 m"}, Paso(ancho=1.5))
     assert a["entra"] == "sin_dato"
 
 
@@ -140,7 +141,7 @@ FLOTA = {"Minicargadora 252B": MINI, "Excavadora 320 DL": {"otras": "6,65 m"}}
     ],
 )
 def test_frena_la_promesa_de_que_entra(paso, texto):
-    assert promesas_de_acceso(texto, entidades_de_acceso(FLOTA, paso))
+    assert promesas_de_acceso(texto, entidades_de_acceso(FLOTA, Paso(ancho=paso)))
 
 
 @pytest.mark.parametrize(
@@ -158,12 +159,12 @@ def test_frena_la_promesa_de_que_entra(paso, texto):
     ],
 )
 def test_deja_pasar_lo_que_es_verdad(paso, texto):
-    assert promesas_de_acceso(texto, entidades_de_acceso(FLOTA, paso)) == []
+    assert promesas_de_acceso(texto, entidades_de_acceso(FLOTA, Paso(ancho=paso))) == []
 
 
 def test_con_el_rotocultivador_a_dos_veinte_no_se_promete():
     texto = "Con el rotocultivador puesto la mini entra por tu pasillo de 2,20 m."
-    problemas = promesas_de_acceso(texto, entidades_de_acceso(FLOTA, 2.2))
+    problemas = promesas_de_acceso(texto, entidades_de_acceso(FLOTA, Paso(ancho=2.2)))
     assert problemas and "Rotocultivador" in problemas[0]
 
 
@@ -241,3 +242,40 @@ async def test_lo_que_no_entra_llega_sin_ficha_y_sin_implementos_que_no_pasan(re
     await ctx.crm.aclose()
     nombres = [i["nombre"] for i in justo["maquinas"][0]["specs"]["implementos"]]
     assert nombres == ["Zanjeadora"]
+
+
+# ------------------------------------------------------------- el alto ---
+
+
+@pytest.mark.parametrize(
+    "texto, ancho, alto",
+    [
+        # "2 m de alto" es el alto del portón, NO el ancho.
+        ("el portón tiene 2 m de alto", None, 2.0),
+        ("la puerta tiene 3 m de ancho y 2,20 de alto", 3.0, 2.2),
+        ("el techo del galpón está a 2,50 m", None, 2.5),
+        ("hay cables a 3 m sobre la entrada", None, 3.0),
+        # La altura de otra cosa no es un paso.
+        ("los postes son de 2 m de alto", None, None),
+        ("el muro tiene 3 m de altura", None, None),
+    ],
+)
+def test_distingue_el_ancho_del_alto(texto, ancho, alto):
+    assert paso_del_lead([texto]) == ancho
+    assert alto_del_lead([texto]) == alto
+
+
+def test_por_dos_metros_de_alto_la_mini_no_entra():
+    """Mide 2,06 m: por un portón de 2 m de alto no pasa, aunque sobre ancho."""
+    a = acceso_de(MINI, Paso(ancho=3.0, alto=2.0))
+    assert a["entra"] == "no"
+    assert "2,06 m de alto" in a["detalle"]
+    assert acceso_de(MINI, Paso(ancho=2.2, alto=2.1))["entra"] == "justo"
+    assert acceso_de(MINI, Paso(ancho=2.2, alto=2.5))["entra"] == "si"
+    assert acceso_de({"ancho_m": 1.83}, Paso(alto=2.5))["entra"] == "sin_dato"
+
+
+def test_frena_el_entra_por_un_porton_bajo():
+    entidades = entidades_de_acceso(FLOTA, Paso(alto=2.0))
+    assert promesas_de_acceso("La mini entra por tu portón sin problema.", entidades)
+    assert promesas_de_acceso("Por 2 m de alto la mini no entra.", entidades) == []
