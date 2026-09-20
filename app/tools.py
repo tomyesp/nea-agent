@@ -1057,6 +1057,10 @@ class ToolRuntime:
                 return _modelo_desconocido()
             raise
 
+        # Cotizar ES avance: la charla está en precio, no dando vueltas. Sin
+        # esto el candado de cierre (app/stall.py) mataba conversaciones que
+        # venían bien — pasó con un lead que ya había pedido precio.
+        self.proposed = True
         g = data.get("desglose") or {}
         pedidas = data.get("horasPedidas")
         facturadas = data.get("horasFacturadas")

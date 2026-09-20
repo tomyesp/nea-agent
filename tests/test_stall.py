@@ -11,7 +11,7 @@ from datetime import timedelta
 import pytest
 
 from app import turn
-from app.stall import es_relleno, racha_vacia, sin_rumbo
+from app.stall import MAX_MENSAJES_SIN_AVANCE, es_relleno, racha_vacia, sin_rumbo
 from app.state import utcnow
 from tests.conftest import IDENTITY, mock_crm_basics, wa_body
 
@@ -21,7 +21,7 @@ from tests.conftest import IDENTITY, mock_crm_basics, wa_body
 
 @pytest.mark.parametrize(
     "texto",
-    ["ok", "va", "ajá", "jaja", "jajaja", "jejeje", "👍", "🙏🙏", "  ", "Gracias"],
+    ["ok", "va", "ajá", "jaja", "jajaja", "jejeje", "👍", "🙏🙏", "  ", "Gracias", "ok 👍", "gracias!! 🙏"],
 )
 def test_relleno_no_aporta(texto):
     assert es_relleno(texto) is True
@@ -55,8 +55,12 @@ def test_sin_rumbo_por_racha_de_vacios():
 
 
 def test_sin_rumbo_por_conversacion_larga_sin_avance():
-    largos = [f"mensaje con contenido numero {i}" for i in range(14)]
+    largos = [f"mensaje con contenido numero {i}" for i in range(MAX_MENSAJES_SIN_AVANCE)]
     assert sin_rumbo(largos, "descubrimiento") is True
+    # 14 mensajes NO alcanzan: con el embudo de asesoramiento una charla que
+    # va bien los pasa. Se cerró un lead que en el mensaje siguiente dijo "la
+    # quiero el lunes a primera hora" (2026-09-19).
+    assert sin_rumbo(largos[:14], "descubrimiento") is False
 
 
 def test_agendando_nunca_se_cierra_por_el_candado():
@@ -96,7 +100,7 @@ async def test_cierra_una_vez_y_despues_calla(ctx, client, respx_mock):
 
     # Y a partir de aquí, silencio: ni LLM ni envío.
     llamadas_previas = len(ctx.llm.calls)
-    await client.post("/webhook", content=wa_body(text="oye", wamid="wamid.v9"))
+    await client.post("/webhook", content=wa_body(text="👍", wamid="wamid.v9"))
     await asyncio.sleep(0.35)
     assert routes["messages"].call_count == 3
     assert len(ctx.llm.calls) == llamadas_previas
@@ -122,6 +126,27 @@ async def test_el_lead_que_vuelve_tras_el_enfriamiento_reabre(
     assert (await ctx.store.get_or_create_conversation(IDENTITY)).stalled_at is None
 
 
+async def test_el_lead_que_vuelve_con_algo_concreto_reabre_en_el_acto(
+    ctx, client, respx_mock
+):
+    """Pasó en vivo: se cerró la charla y 30 segundos después el lead escribió
+    "la quiero el lunes a primera hora". Nadie le contestó."""
+    routes = mock_crm_basics(respx_mock)
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    await ctx.store.update_conversation(
+        conv.id, crm_conversation_id="cv_test1", stalled_at=utcnow()
+    )
+
+    await client.post(
+        "/webhook",
+        content=wa_body(text="bien, la quiero el lunes a primera hora", wamid="wamid.r2"),
+    )
+    await asyncio.sleep(0.35)
+
+    assert routes["messages"].call_count == 1
+    assert (await ctx.store.get_or_create_conversation(IDENTITY)).stalled_at is None
+
+
 async def test_el_candado_no_pisa_el_handoff_por_hostilidad(
     ctx, client, respx_mock
 ):
@@ -141,7 +166,9 @@ async def test_el_candado_no_pisa_el_handoff_por_hostilidad(
 async def test_no_manda_escribiendo_a_una_conversacion_cerrada(
     ctx, client, respx_mock
 ):
-    """Un "escribiendo…" seguido de silencio es peor que el silencio solo."""
+    """Un "escribiendo…" seguido de silencio es peor que el silencio solo.
+
+    Con un mensaje de relleno: uno con contenido reabre la charla."""
     routes = mock_crm_basics(respx_mock)
     conv = await ctx.store.get_or_create_conversation(IDENTITY)
     await ctx.store.update_conversation(
@@ -149,7 +176,7 @@ async def test_no_manda_escribiendo_a_una_conversacion_cerrada(
     )
     previos = routes["typing"].call_count
 
-    await client.post("/webhook", content=wa_body(text="sigues ahi?", wamid="wamid.t1"))
+    await client.post("/webhook", content=wa_body(text="ok", wamid="wamid.t1"))
     await asyncio.sleep(0.35)
 
     assert routes["typing"].call_count == previos

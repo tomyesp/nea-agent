@@ -52,7 +52,7 @@ from app.crm import CrmConflict, CrmError, canonical_handoff_reason
 from app.escalation import alert_for, needs_human
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import LlmExhausted
-from app.stall import ALERTA as STALL_ALERT, racha_vacia, sin_rumbo
+from app.stall import ALERTA as STALL_ALERT, es_relleno, racha_vacia, sin_rumbo
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
 from app.state import AppContext, InboundMessage, utcnow
@@ -194,14 +194,23 @@ async def run_turn(
     # reabre sola tras el enfriamiento (un lead que vuelve al día siguiente
     # merece respuesta) o cuando el dueño reactiva la IA desde el CRM.
     if conv.stalled_at is not None:
-        if utcnow() - conv.stalled_at < STALL_COOLDOWN:
+        # Un mensaje CON CONTENIDO reabre en el acto: el candado es para el que
+        # no dice nada, no para el que vuelve con algo. Pasó en vivo: se cerró
+        # la charla y el lead escribió "la quiero el lunes a primera hora" 30
+        # segundos después — y nadie le contestó (2026-09-19).
+        vuelve_con_algo = any(
+            (m.type or "text") != "text" or not es_relleno(m.text or "") for m in inbound
+        )
+        if utcnow() - conv.stalled_at < STALL_COOLDOWN and not vuelve_con_algo:
             logger.info(
                 "turno %s: conversación cerrada por falta de rumbo — silencio",
                 identity,
             )
             return TurnResult(silencio="sin_rumbo")
         logger.info(
-            "turno %s: el lead volvió tras el enfriamiento — reabro", identity
+            "turno %s: el lead volvió %s — reabro",
+            identity,
+            "con algo concreto" if vuelve_con_algo else "tras el enfriamiento",
         )
         await ctx.store.update_conversation(conv.id, stalled_at=None)
         conv.stalled_at = None

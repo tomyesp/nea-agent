@@ -28,7 +28,9 @@ import re
 _RELLENO = re.compile(
     r"^(ok(ay)?|oka|va|sale|ah|ajá|aja|mmm?|hmm?|eh|este|ya|bueno|"
     r"gracias|grax|(?:ja|je|ji|ha){2,}|lol|:v|👍|👌|🙏|😂|🤣|🙂|😅"
-    r")[\s.!¡?¿,😀-🿿]*$",
+    # El rango arrancaba en 😀 y dejaba afuera al pulgar (👍):
+    # "ok 👍" no contaba como relleno.
+    r")[\s.!¡?¿,🌀-🫿☀-➿]*$",
     re.I,
 )
 # Solo emojis/puntuación: tampoco aporta.
@@ -38,8 +40,14 @@ MAX_CARACTERES_VACIO = 24  # arriba de esto asumimos que dijo algo
 
 # Mensajes de relleno seguidos del lead que disparan el cierre.
 RACHA_VACIA = 3
-# Mensajes del lead sin que la conversación llegue nunca a agendar/DIY/handoff.
-MAX_MENSAJES_SIN_AVANCE = 14
+# Mensajes del lead sin que la conversación llegue nunca a cotizar, consultar
+# fechas, agendar o handoff. En alquiler de maquinaria el embudo empieza por
+# ASESORAR —qué obra, qué suelo, qué acceso, qué implemento—, y una charla que
+# va bien pasa los 14 mensajes sin despeinarse: con ese número se cerró un
+# lead que en el mensaje siguiente dijo "la quiero el lunes a primera hora"
+# (2026-09-19). El candado es para el que no dice nada, no para el que
+# pregunta mucho.
+MAX_MENSAJES_SIN_AVANCE = 30
 
 ALERTA = (
     "ALERTA DEL SISTEMA (esto NO lo escribió el lead): esta conversación ya no "
