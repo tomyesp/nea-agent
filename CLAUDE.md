@@ -110,6 +110,12 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   `specs.ancho_m` y el `ancho_m` de los implementos más anchos, y
   `buscar_maquinas` manda lo que no entra SIN ficha (sin specs no hay con
   qué recomendarla) y saca de la lista los implementos que no pasan.
+- **Nombrar una máquina exige haber mirado el catálogo EN ESE TURNO.** No es
+  solo una regla del prompt: si el turno no llamó ninguna herramienta de
+  maquinaria (buscar, disponibilidad, cotizar, reservar) y la respuesta nombra
+  una máquina del catálogo, `turn.py` le mete la ficha real como aviso del
+  sistema y la hace reescribir. Validar el NOMBRE no alcanzaba: a un lead real
+  le recomendó "una Miniexcavadora 8018 CTS" con medidas, todo de memoria.
 - **Los implementos son datos, no código.** RPM alquila la minicargadora con
   el implemento que pide el trabajo (martillo, hoyadora, zanjeadora…),
   incluido en la hora. Viven en `specs.implementos` del modelo en el CRM,
