@@ -17,6 +17,7 @@ tenga pinta de marca o de modelo, no sale.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -271,12 +272,8 @@ async def permitido_del_crm(ctx: Any) -> set[str]:
     return permitido
 
 
-async def modelos_del_crm(ctx: Any) -> dict[str, dict[str, Any]]:
-    """{nombre: specs} de TODO el catálogo, cacheado.
-
-    De quién es un implemento no depende de lo que el modelo haya buscado en
-    este turno: buscando "grúa para demoler" el catálogo devuelve las grúas, y
-    con eso no hay forma de saber que el martillo es de la minicargadora."""
+async def fichas_del_crm(ctx: Any) -> list[dict[str, Any]]:
+    """El catálogo COMPLETO tal como lo manda el CRM, cacheado."""
     ahora = time.monotonic()
     if _cache["modelos"] is not None and (ahora - _cache["modelos_at"]) < CACHE_TTL:
         return _cache["modelos"]
@@ -284,16 +281,62 @@ async def modelos_del_crm(ctx: Any) -> dict[str, dict[str, Any]]:
         data = await ctx.crm.get_catalogo(None)
     except Exception as exc:
         logger.warning("catálogo inaccesible para la guarda (%s) — no opino", exc)
-        return {}
-    modelos = {
-        str(m.get("nombre") or ""): (m.get("specs") or {})
-        for m in (data or {}).get("modelos") or []
-        if m.get("nombre")
-    }
-    if modelos:
-        _cache["modelos"] = modelos
+        return []
+    fichas = [m for m in (data or {}).get("modelos") or [] if m.get("nombre")]
+    if fichas:
+        _cache["modelos"] = fichas
         _cache["modelos_at"] = ahora
-    return modelos
+    return fichas
+
+
+async def modelos_del_crm(ctx: Any) -> dict[str, dict[str, Any]]:
+    """{nombre: specs} de TODO el catálogo.
+
+    De quién es un implemento no depende de lo que el modelo haya buscado en
+    este turno: buscando "grúa para demoler" el catálogo devuelve las grúas, y
+    con eso no hay forma de saber que el martillo es de la minicargadora."""
+    return {str(m["nombre"]): (m.get("specs") or {}) for m in await fichas_del_crm(ctx)}
+
+
+def maquinas_nombradas(texto: str | None, fichas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Las máquinas DEL CATÁLOGO que la respuesta nombra."""
+    if not texto or not fichas:
+        return []
+    palabras = set(_PALABRA.findall(normalizar(texto)))
+    return [f for f in fichas if alias_de(str(f.get("nombre") or "")) & palabras]
+
+
+def aviso_sin_mirar_el_catalogo(fichas: list[dict[str, Any]]) -> str:
+    """La ficha REAL, metida en el turno.
+
+    Pasó con un lead real (2026-09-19): recomendó "una miniexcavadora" y le
+    inventó marca, modelo y medidas sin haber llamado buscar_maquinas ni una
+    vez. Validar el nombre no alcanza: los NÚMEROS también salían de su
+    memoria. Así que si nombra una máquina sin haber mirado el catálogo en el
+    turno, la ficha se le pone delante y reescribe con eso.
+    """
+    resumen = [
+        {
+            "nombre": f.get("nombre"),
+            "marca": f.get("marca"),
+            "categoria": f.get("categoria"),
+            "specs": f.get("specs") or {},
+            "precio_por_hora": f.get("tarifa", {}).get("horaCents") if isinstance(f.get("tarifa"), dict) else None,
+            "unidades_en_flota": f.get("unidades"),
+        }
+        for f in fichas
+    ]
+    return (
+        "AVISO DEL SISTEMA — en este turno nombraste máquinas SIN mirar el "
+        "catálogo. Tu respuesta todavía no salió. Esta es la ficha REAL de lo "
+        "que nombraste, tal cual está en el catálogo:\n"
+        + json.dumps(resumen, ensure_ascii=False)
+        + "\nReescribí la respuesta con ESTOS datos: el nombre exacto y las "
+        "specs tal cual. Si lo que dijiste no coincide, corregilo. Y si para "
+        "ese trabajo necesitás otra máquina, llamá buscar_maquinas ANTES de "
+        "nombrarla: las medidas que recordás de otras máquinas no son las de "
+        "esta flota."
+    )
 
 
 def limpiar_cache() -> None:

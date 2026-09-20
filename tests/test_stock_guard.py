@@ -331,7 +331,9 @@ async def test_si_insiste_con_el_implemento_ajeno_lo_toma_un_asesor(respx_mock):
 
     limpiar_cache()
     falsa = LlmReply(content="La Excavadora 320 DL con martillo hidráulico te demuele eso.")
-    ctx = make_ctx(llm=FakeLLM(replies=[falsa, falsa]))
+    # Tres: la primera vuelta la pide la ficha del catálogo (no miró), las
+    # otras dos son las de la guarda del implemento.
+    ctx = make_ctx(llm=FakeLLM(replies=[falsa, falsa, falsa]))
     ctx.inventory_enabled = True
     routes = mock_crm_basics(respx_mock)
     respx_mock.get(url__startswith=f"{CRM_URL}/api/bot/catalogo").mock(

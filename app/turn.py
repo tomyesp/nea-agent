@@ -42,7 +42,10 @@ from app.catalog_guard import (
     PREGUNTA_SEGURA as CATALOGO_PREGUNTA_SEGURA,
     alerta_implemento_ajeno,
     alerta_maquinas_ajenas,
+    aviso_sin_mirar_el_catalogo,
+    fichas_del_crm,
     implementos_mal_colgados,
+    maquinas_nombradas,
     menciones_ajenas,
     modelos_del_crm,
     permitido_del_crm,
@@ -367,6 +370,10 @@ async def run_turn(
     # (app/catalog_guard.py).
     final_text = await _sin_maquinas_ajenas(ctx, identity, messages, runtime, final_text)
 
+    # Antes que nada: si nombró una máquina sin haber mirado el catálogo, la
+    # ficha real se le pone delante y reescribe (app/catalog_guard.py).
+    final_text = await _con_la_ficha_a_la_vista(ctx, identity, messages, runtime, final_text)
+
     # …ni que le cuelgue el martillo de la minicargadora a una excavadora
     # (app/catalog_guard.py).
     final_text = await _sin_implemento_ajeno(ctx, identity, messages, runtime, final_text)
@@ -549,6 +556,44 @@ async def _sin_maquinas_ajenas(
         identity,
     )
     return CATALOGO_PREGUNTA_SEGURA
+
+
+async def _con_la_ficha_a_la_vista(
+    ctx: AppContext,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """Nombrar una máquina exige haber mirado el catálogo EN ESTE TURNO.
+
+    Pasó con un lead real (2026-09-19): "lo ideal es una miniexcavadora" y
+    después "la Miniexcavadora 8018 CTS mide 0,96 m de ancho", sin una sola
+    llamada a buscar_maquinas. Validar el nombre no alcanza: los NÚMEROS
+    también salen de la memoria. Si el turno no tocó el catálogo, la ficha
+    real entra al turno y el modelo reescribe con eso.
+    """
+    if not ctx.inventory_enabled or not final_text or runtime.miro_catalogo:
+        return final_text
+    fichas = await fichas_del_crm(ctx)
+    nombradas = maquinas_nombradas(final_text, fichas)
+    if not nombradas:
+        return final_text
+    logger.info(
+        "turno %s: nombró %s sin mirar el catálogo — le paso la ficha y que "
+        "reescriba",
+        identity,
+        ", ".join(str(f.get("nombre")) for f in nombradas),
+    )
+    messages.append({"role": "system", "content": aviso_sin_mirar_el_catalogo(nombradas)})
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        return final_text
+    # Si la vuelta con la ficha delante no dio texto, vale el borrador: las
+    # otras guardas siguen mirándolo.
+    return segundo if segundo and segundo.strip() else final_text
 
 
 async def _sin_implemento_ajeno(

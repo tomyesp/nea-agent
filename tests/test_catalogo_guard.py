@@ -221,10 +221,59 @@ async def test_si_insiste_con_la_marca_ajena_sale_la_pregunta_segura(respx_mock)
 
 
 async def test_una_respuesta_con_maquinas_del_catalogo_no_paga_vuelta_extra(respx_mock):
+    """Con el catálogo mirado en el turno, la respuesta sale derecho."""
     llm = FakeLLM(
-        replies=[LlmReply(content="Para ese pozo va la Retroexcavadora 406, balde de 1 m3.")]
+        replies=[
+            BUSCAR,
+            LlmReply(content="Para ese pozo va la Retroexcavadora 406, balde de 1 m3."),
+        ]
     )
     result, routes, enviados = await _turno(respx_mock, llm)
 
     assert enviados == ["Para ese pozo va la Retroexcavadora 406, balde de 1 m3."]
+    assert len(llm.calls) == 2
+
+
+# ------------------------- nombrar una máquina exige mirar el catálogo ---
+
+
+async def test_si_nombra_sin_mirar_el_catalogo_se_le_pasa_la_ficha(respx_mock):
+    """De un lead real: "lo ideal es una miniexcavadora… la 8018 CTS mide 0,96
+    m de ancho", sin una sola llamada al catálogo. Validar el nombre no
+    alcanza: los números también salían de su memoria."""
+    llm = FakeLLM(
+        replies=[
+            LlmReply(content="Te sirve la Retroexcavadora 406, que excava hasta 9 metros."),
+            LlmReply(content="La Retroexcavadora 406 excava hasta 4,35 m y su balde carga 1 m3."),
+        ]
+    )
+    result, routes, enviados = await _turno(respx_mock, llm, texto="que retro tenes?")
+
+    assert enviados == ["La Retroexcavadora 406 excava hasta 4,35 m y su balde carga 1 m3."]
+    avisos = [
+        m["content"]
+        for m in llm.calls[-1]["messages"]
+        if m["role"] == "system" and "SIN mirar el catálogo" in str(m["content"])
+    ]
+    assert len(avisos) == 1 and "Retroexcavadora 406" in avisos[0]
+
+
+async def test_si_ya_miro_el_catalogo_no_paga_vuelta_extra(respx_mock):
+    llm = FakeLLM(
+        replies=[
+            BUSCAR,
+            LlmReply(content="Para ese pozo va la Retroexcavadora 406, balde de 1 m3."),
+        ]
+    )
+    result, routes, enviados = await _turno(respx_mock, llm)
+
+    assert enviados == ["Para ese pozo va la Retroexcavadora 406, balde de 1 m3."]
+    assert len(llm.calls) == 2  # la búsqueda y la respuesta: nada más
+
+
+async def test_una_respuesta_sin_maquinas_no_paga_vuelta_extra(respx_mock):
+    llm = FakeLLM(replies=[LlmReply(content="¿En qué localidad es la obra?")])
+    result, routes, enviados = await _turno(respx_mock, llm)
+
+    assert enviados == ["¿En qué localidad es la obra?"]
     assert len(llm.calls) == 1

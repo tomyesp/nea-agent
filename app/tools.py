@@ -602,6 +602,9 @@ class ToolRuntime:
         # que no: con qué paso se calculó y las fichas que vio el modelo.
         self.paso_usado: Paso | None = None
         self.modelos_vistos: dict[str, dict[str, Any]] = {}
+        #: ¿El turno fue al catálogo del CRM? Si no, una máquina nombrada en la
+        #: respuesta salió de la memoria del modelo.
+        self.miro_catalogo = False
         # Lo que se consultó de disponibilidad en este turno {nombre: ¿libre?}
         # y cómo se llama cada modelo_id. Con eso, turn.py frena una falta de
         # stock inventada (app/stock_guard.py).
@@ -640,7 +643,22 @@ class ToolRuntime:
         una respuesta que diga "ya la tenés tomada" es falsa (turn.py)."""
         return bool(self.booking or self._reserva_activa)
 
+    #: Herramientas que van al catálogo del CRM. Si el turno no llamó ninguna
+    #: y la respuesta nombra una máquina, los datos salen de la memoria del
+    #: modelo: turn.py le pone la ficha real delante y la hace reescribir.
+    DEL_CATALOGO = frozenset(
+        {
+            "buscar_maquinas",
+            "consultar_disponibilidad",
+            "cotizar",
+            "crear_reserva_tentativa",
+            "cambiar_reserva_tentativa",
+        }
+    )
+
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name in self.DEL_CATALOGO:
+            self.miro_catalogo = True
         result = await self._execute(name, args)
         if self._trace is not None:
             self._trace.append(
