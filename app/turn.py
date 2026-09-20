@@ -26,6 +26,7 @@ from app.acceso import (
     alerta_acceso,
     alto_del_lead,
     entidades_de_acceso,
+    hablo_de_un_acceso,
     paso_del_lead,
     pregunta_segura_acceso,
     promesas_de_acceso,
@@ -339,6 +340,7 @@ async def run_turn(
         # de acceso lo calcula el código (app/acceso.py), no el modelo.
         ancho_paso_m=paso_del_lead(del_lead),
         alto_paso_m=alto_del_lead(del_lead),
+        hablo_de_acceso=hablo_de_un_acceso(del_lead),
     )
     try:
         final_text = await _tool_loop(ctx, messages, runtime)

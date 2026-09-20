@@ -588,12 +588,16 @@ class ToolRuntime:
         reserva_activa: dict[str, Any] | None = None,
         ancho_paso_m: float | None = None,
         alto_paso_m: float | None = None,
+        hablo_de_acceso: bool = False,
     ) -> None:
         self._ctx = ctx
         # El paso (ancho y/o alto) que dijo el lead en sus mensajes
         # (app/acceso.py): si el modelo no lo manda al buscar, las máquinas
         # vuelven igual con su veredicto de acceso.
         self._paso_del_lead = Paso(ancho=ancho_paso_m, alto=alto_paso_m)
+        # ¿El lead habló de un pasillo, un portón, un techo? Si no, la medida
+        # que mande el modelo NO es un paso: le pasó el ancho de la zanja.
+        self._hablo_de_acceso = hablo_de_acceso or bool(self._paso_del_lead)
         # Lo que turn.py necesita para frenar un "entra" que el sistema dijo
         # que no: con qué paso se calculó y las fichas que vio el modelo.
         self.paso_usado: Paso | None = None
@@ -722,10 +726,16 @@ class ToolRuntime:
                     "derecho y no nombres ninguna máquina."
                 ),
             }
-        # La medida que mande el modelo gana a la que se leyó en los mensajes.
+        # La medida que mande el modelo gana a la que se leyó en los mensajes,
+        # pero solo si el lead habló de un acceso: si no, lo que manda es una
+        # medida de la obra (el ancho de la zanja, por ejemplo).
+        del_modelo = Paso(
+            ancho=metros_de(args.get("ancho_paso_m")) if self._hablo_de_acceso else None,
+            alto=metros_de(args.get("alto_paso_m")) if self._hablo_de_acceso else None,
+        )
         paso = Paso(
-            ancho=metros_de(args.get("ancho_paso_m")) or self._paso_del_lead.ancho,
-            alto=metros_de(args.get("alto_paso_m")) or self._paso_del_lead.alto,
+            ancho=del_modelo.ancho or self._paso_del_lead.ancho,
+            alto=del_modelo.alto or self._paso_del_lead.alto,
         )
         maquinas = []
         for m in modelos:

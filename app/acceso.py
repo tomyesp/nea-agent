@@ -91,6 +91,16 @@ def alto_del_lead(textos: list[str]) -> float | None:
     return _ultima(textos, buscar)
 
 
+def hablo_de_un_acceso(textos: list[str]) -> bool:
+    """¿El lead nombró por dónde tiene que entrar la máquina?
+
+    Sin esto, el modelo mandaba como paso lo primero que veía: a un lead con
+    una "zanja de 60 cm de ancho" le contestó que no podía asegurarle que la
+    excavadora pasara por 60 cm (2026-09-19). El ancho de la zanja no es una
+    puerta."""
+    return any(_HAY_ACCESO.search(normalizar(t or "")) for t in textos or [])
+
+
 def metros_de(valor: Any) -> float | None:
     if isinstance(valor, bool):
         return None

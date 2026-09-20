@@ -279,3 +279,44 @@ def test_frena_el_entra_por_un_porton_bajo():
     entidades = entidades_de_acceso(FLOTA, Paso(alto=2.0))
     assert promesas_de_acceso("La mini entra por tu portón sin problema.", entidades)
     assert promesas_de_acceso("Por 2 m de alto la mini no entra.", entidades) == []
+
+
+# ------------------------------------- el ancho de la zanja NO es un paso ---
+
+
+@pytest.mark.parametrize(
+    "textos, esperado",
+    [
+        (["se entra por un pasillo de 1,50 m"], True),
+        (["el portón es chico, no sé cuánto mide"], True),
+        (["el techo del galpón es bajo"], True),
+        # Medidas de la OBRA: no hay acceso del que hablar.
+        (["zanja de 60 cm de ancho y 1,50 m de profundidad, sobre vereda"], False),
+        (["necesito 30 pozos de 20 cm"], False),
+    ],
+)
+def test_reconoce_si_el_lead_hablo_de_un_acceso(textos, esperado):
+    from app.acceso import hablo_de_un_acceso
+
+    assert hablo_de_un_acceso(textos) is esperado
+
+
+async def test_sin_acceso_la_medida_del_modelo_se_ignora(respx_mock):
+    """En vivo: el lead dijo "zanja de 60 cm de ancho" y el modelo mandó eso
+    como ancho del paso; Nea contestó que no podía asegurar que la máquina
+    pasara por 60 cm (2026-09-19)."""
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    respx_mock.get(url__startswith=f"{CRM_URL}/api/bot/catalogo").mock(
+        return_value=httpx.Response(
+            200, json={"modelos": [{"modeloId": "m1", "nombre": "Minicargadora 252B", "specs": MINI}]}
+        )
+    )
+    sin_acceso = ToolRuntime(ctx, conv, "c", hablo_de_acceso=False)
+    out = await sin_acceso.execute("buscar_maquinas", {"consulta": "zanja", "ancho_paso_m": 0.6})
+    assert "acceso" not in out["maquinas"][0]
+
+    con_acceso = ToolRuntime(ctx, conv, "c", hablo_de_acceso=True)
+    out2 = await con_acceso.execute("buscar_maquinas", {"consulta": "zanja", "ancho_paso_m": 0.6})
+    await ctx.crm.aclose()
+    assert out2["maquinas"][0]["acceso"]["entra"] == "no"
