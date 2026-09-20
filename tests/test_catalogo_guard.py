@@ -128,6 +128,38 @@ def test_lo_que_dice_la_ficha_tecnica_tambien_es_catalogo():
     assert "h65d" in menciones_ajenas("Te llevo el martillo H65D.", permitido)
 
 
+@pytest.mark.parametrize(
+    "texto, esperado",
+    [
+        # De un lead real (2026-09-19): recomendó una JCB 8018 CTS de memoria,
+        # con medidas y todo, sin haber mirado el catálogo. El tipo de máquina
+        # no existe en la flota y el código va partido ("8018" + "CTS"), así
+        # que ni las marcas ni `_sospechoso` lo veían.
+        ("Para una vereda céntrica lo ideal es una miniexcavadora.", "miniexcavadora"),
+        ("Te cuento más de la Miniexcavadora 8018 CTS: mide 0,96 m de ancho.", "8018 cts"),
+        ("Te consigo un manipulador telescópico.", "manipulador telescopico"),
+    ],
+)
+def test_un_tipo_de_maquina_que_el_negocio_no_tiene_tampoco_sale(texto, esperado):
+    assert esperado in menciones_ajenas(texto, PERMITIDO)
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        # Números que NO son modelos: fechas, plata, medidas, cantidades.
+        "Te la dejo tomada del lunes 21 al miércoles 23 de septiembre por $1.651.860 + IVA.",
+        "Pesa 21.500 kg y excava hasta 6,65 metros.",
+        "Son 2.000 kPa de contrapresión y 1.022 golpes por minuto.",
+        "El rotocultivador tiene 1,85 m de ancho y 36 cuchillas.",
+        # Decir que no tenemos ese tipo es exactamente lo que se le pide.
+        "Miniexcavadora no tenemos: lo más chico es la Minicargadora 236C.",
+    ],
+)
+def test_no_confunde_numeros_sueltos_con_modelos(texto):
+    assert menciones_ajenas(texto, PERMITIDO) == []
+
+
 def test_sin_catalogo_la_guarda_no_opina():
     """Si el CRM no contesta, no hay fuente de verdad: jamás frenar a ciegas."""
     assert menciones_ajenas("Te recomiendo una Bobcat S450.", set()) == []

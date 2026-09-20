@@ -41,8 +41,32 @@ MARCAS = (
     "zanello", "pauny", "deutz", "bell", "michigan",
 )
 
+#: TIPOS de máquina del rubro que el modelo conoce de memoria. Mismo criterio
+#: que MARCAS: si el tipo no está en el catálogo de este negocio y aparece en
+#: la respuesta, es invención. Pasó (2026-09-19): "para una vereda céntrica lo
+#: ideal es una miniexcavadora", y siguió con marca, modelo y medidas — RPM no
+#: tiene miniexcavadoras.
+TIPOS = (
+    "miniexcavadora", "miniexcavadoras", "minipala", "minipalas",
+    "manipulador telescopico", "plataforma elevadora", "tijera elevadora",
+    "autoelevador", "autoelevadores", "montacargas", "grua torre",
+    "hormigonera", "mixer", "motoniveladora de oruga", "zanjadora de cadena",
+    "trencher", "bulldozer", "backhoe", "skid steer", "dumper", "dumpers",
+)
+
 _PALABRA = re.compile(r"[a-z0-9]+")
 _DIGITOS = re.compile(r"\d+")
+#: "8018 CTS", "3CX 4x4": número de modelo y sufijo separados por un espacio.
+#: Con letras y números pegados los agarra `_sospechoso`; separados, no.
+_CODIGO_PARTIDO = re.compile(r"\b(\d{3,6})\s+([a-z]{2,5})\b")
+#: Lo que viene detrás de un número y NO es un modelo: unidades y palabras
+#: corrientes (fechas, plata, medidas).
+_NO_ES_MODELO = frozenset(
+    """kpa psi bar rpm cv hp kw kva nm mm cm km kg tn ton hs hrs hr lts lt gal
+    gpm mpa ksi db mts mt m2 m3 j l m t h de del a y o e por con en para mas
+    sin iva dia dias mes meses ano anos hora horas ene feb mar abr may jun jul
+    ago sep sept oct nov dic lun mie jue vie sab dom pesos mil""".split()
+)
 #: "800m3", "20hs", "3tn": medidas, no modelos.
 _UNIDAD = re.compile(r"^\d+(m2|m3|mm|cm|km|kg|tn|ton|hs|hp|kw|kva|lts?|min|seg|t|h|m|l)$")
 #: "20x40", "3x2": medidas de terreno.
@@ -150,6 +174,17 @@ def menciones_ajenas(texto: str | None, permitido: set[str]) -> list[str]:
         plana = normalizar(frase)
         if _NIEGA.search(plana):
             continue
+        for tipo in TIPOS:
+            if all(p in permitido for p in tipo.split()):
+                continue  # ese tipo SÍ está en el catálogo
+            if re.search(rf"(?<!\w){re.escape(tipo)}(?!\w)", plana):
+                ajenas.append(tipo)
+        for numero, sufijo in _CODIGO_PARTIDO.findall(plana):
+            if numero in permitido or sufijo in permitido:
+                continue  # "320 DL", "1722 Grúa": del catálogo
+            if sufijo in _NO_ES_MODELO or f"codigo:{numero}" in permitido:
+                continue
+            ajenas.append(f"{numero} {sufijo}")
         for marca in MARCAS:
             if marca in permitido or " " in marca and all(
                 p in permitido for p in marca.split()

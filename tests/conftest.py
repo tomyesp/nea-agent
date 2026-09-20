@@ -16,6 +16,17 @@ from app.state import AppContext, MemoryStore
 CRM_URL = "http://crm.test"
 CRM_WEBHOOK_URL = "http://crm.test/api/webhooks/wa/tok-crm"
 
+
+@pytest.fixture(autouse=True)
+def _catalogo_limpio():
+    """Las guardas cachean el catálogo 10 minutos: entre tests hay que
+    tirarlo, o el catálogo de un test opina en el siguiente."""
+    from app.catalog_guard import limpiar_cache
+
+    limpiar_cache()
+    yield
+    limpiar_cache()
+
 IDENTITY = "525550001111"
 CRM_CONV_ID = "cv_test1"
 
