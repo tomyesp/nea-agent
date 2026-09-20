@@ -292,6 +292,8 @@ def test_frena_el_entra_por_un_porton_bajo():
         (["el techo del galpón es bajo"], True),
         # Medidas de la OBRA: no hay acceso del que hablar.
         (["zanja de 60 cm de ancho y 1,50 m de profundidad, sobre vereda"], False),
+        # "cable subterráneo" NO es un cable aéreo que estorbe por arriba.
+        (["tengo una obra de cable subterráneo de 2 km en zona céntrica"], False),
         (["necesito 30 pozos de 20 cm"], False),
     ],
 )

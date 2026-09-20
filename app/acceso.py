@@ -44,6 +44,11 @@ _ALTO_DICHO = re.compile(rf"{_NUMERO}\s*{_UNIDAD}{_ES_ALTO}")
 _ALTO_ARRIBA = re.compile(rf"\b{_ARRIBA}\b[^.!?\n\d]{{0,30}}?{_NUMERO}\s*{_UNIDAD}(?![a-z])")
 _FRASE = re.compile(r"[^.!?\n]+")
 _HAY_ACCESO = re.compile(rf"\b(?:{_LUGAR}|{_ARRIBA})\b")
+#: Para DECIDIR si el lead habló de un acceso, "cables" no alcanza: un lead
+#: con una obra de "cable subterráneo" no está hablando de cables aéreos, y
+#: con eso el modelo colaba el ancho de la zanja como si fuera una puerta
+#: (2026-09-19). Ahí sí vale cuando viene con una altura ("cables a 3 m").
+_ES_UN_ACCESO = re.compile(rf"\b(?:{_LUGAR}|techo|dintel|alero|tinglado|galpon)\b")
 
 
 def _a_metros(numero: str, unidad: str | None) -> float | None:
@@ -98,7 +103,7 @@ def hablo_de_un_acceso(textos: list[str]) -> bool:
     una "zanja de 60 cm de ancho" le contestó que no podía asegurarle que la
     excavadora pasara por 60 cm (2026-09-19). El ancho de la zanja no es una
     puerta."""
-    return any(_HAY_ACCESO.search(normalizar(t or "")) for t in textos or [])
+    return any(_ES_UN_ACCESO.search(normalizar(t or "")) for t in textos or [])
 
 
 def metros_de(valor: Any) -> float | None:
