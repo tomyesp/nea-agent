@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from app import media
 from app.config import canonical_identity
+from app.promesa_guard import AVISO as PROMESA_AVISO, anuncia_una_busqueda
 from app.stock_guard import (
     PREGUNTA_SEGURA as STOCK_PREGUNTA_SEGURA,
     alerta_stock,
@@ -361,6 +362,11 @@ async def run_turn(
         )
         return TurnResult(handoff="error", silencio="llm_agotado", tools=trace or [])
 
+    # Un "te busco las opciones" sin buscar deja al lead esperando: el
+    # agente no escribe primero (app/promesa_guard.py). Va antes que las
+    # demás guardas para que miren la respuesta que de verdad sale.
+    final_text = await _sin_promesa_de_busqueda(ctx, identity, messages, runtime, final_text)
+
     # Una reserva que el modelo da por hecha sin que nada se haya reservado no
     # sale: se le avisa, tiene una vuelta para reservar o corregirse, y si
     # insiste sale una pregunta de confirmación (app/booking_guard.py).
@@ -598,6 +604,27 @@ async def _con_la_ficha_a_la_vista(
         return final_text
     # Si la vuelta con la ficha delante no dio texto, vale el borrador: las
     # otras guardas siguen mirándolo.
+    return segundo if segundo and segundo.strip() else final_text
+
+
+async def _sin_promesa_de_busqueda(
+    ctx: AppContext,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """Pasó en vivo (2026-09-26): "te busco las mejores opciones para el
+    trabajo" y el turno terminó sin buscar."""
+    if not ctx.inventory_enabled or runtime.miro_catalogo or not anuncia_una_busqueda(final_text):
+        return final_text
+    logger.info("turno %s: anuncia una búsqueda que no hizo — que busque", identity)
+    messages.append({"role": "system", "content": PROMESA_AVISO})
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        return final_text
     return segundo if segundo and segundo.strip() else final_text
 
 
