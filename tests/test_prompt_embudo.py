@@ -160,6 +160,16 @@ def test_recomienda_maquina_con_su_implemento():
     assert "en ESE turno llamá update_ficha con `maquina_interes`" in p
 
 
+def test_asesora_con_las_tareas_de_la_ficha():
+    """El dueño cargó en cada máquina qué trabajos hace (`specs.tareas`), qué
+    no hace (`specs.no_hace`: sin martillo en retros ni excavadoras) y un
+    alcance orientativo (2026-09-26)."""
+    p = _prompt()
+    assert "leé `specs.tareas` de cada ficha" in p
+    assert "`specs.no_hace` es lo que NO hace" in p
+    assert "`specs.alcance` es orientativo" in p
+
+
 def test_compara_el_paso_con_el_ancho_antes_de_recomendar():
     """En vivo (Gemini, 2026-09-19): "la minicargadora mide 1,83 m, así que
     entra bien en el pasillo de 1,50 m que tenés"."""
