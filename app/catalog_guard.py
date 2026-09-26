@@ -70,6 +70,8 @@ _NO_ES_MODELO = frozenset(
 )
 #: "800m3", "20hs", "3tn": medidas, no modelos.
 _UNIDAD = re.compile(r"^\d+(m2|m3|mm|cm|km|kg|tn|ton|hs|hp|kw|kva|lts?|min|seg|t|h|m|l)$")
+#: Unidades que no dejan dudas: nadie escribe un modelo "50cm" o "160mm".
+_UNIDAD_CLARA = re.compile(r"^\d+(m2|m3|mm|cm|km|kg|tn|ton|hs|hp|kw|kva|lts|min|seg)$")
 #: "20x40", "3x2": medidas de terreno.
 _MEDIDA = re.compile(r"^\d+x\d+$")
 #: Frases que NIEGAN tener la máquina. Nombrar una marca para decir que no la
@@ -157,6 +159,10 @@ def _codigo_mutado(token: str, permitido: set[str]) -> bool:
     estaba libre. Si los números del token son los de un modelo del catálogo y
     las letras no coinciden, es ESE modelo mal escrito."""
     if not any(c.isalpha() for c in token) or not any(c.isdigit() for c in token):
+        return False
+    # "50cm" no es la SL50W: una unidad de dos letras o más no se confunde con
+    # la letra de un modelo. "320l" sí (la "l" de litros es una letra suelta).
+    if _UNIDAD_CLARA.match(token):
         return False
     digitos = _DIGITOS.search(token)
     return digitos is not None and f"codigo:{digitos.group()}" in permitido
@@ -419,7 +425,7 @@ PREGUNTA_SEGURA = (
 #: Pasó en vivo (2026-09-26): "llevar mi excavadora de Perico a Humahuaca" →
 #: "No hacemos fletes de máquinas de terceros", sin mirar el catálogo — y los
 #: tractores salen con carretón para transportar maquinaria.
-_NIEGA = re.compile(
+_NIEGA_SERVICIO = re.compile(
     r"\bno\s+(?:lo\s+|la\s+|los\s+|las\s+|eso\s+)?"
     r"(?:hacemos|tenemos|ofrecemos|alquilamos|brindamos|realizamos|prestamos|"
     r"damos|manejamos|contamos\s+con|trabajamos\s+con)\b"
@@ -428,7 +434,7 @@ _NIEGA = re.compile(
 
 def niega_un_servicio(texto: str | None) -> bool:
     """¿La respuesta le dice al lead que el negocio NO hace o NO tiene algo?"""
-    return bool(texto) and bool(_NIEGA.search(normalizar(texto)))
+    return bool(texto) and bool(_NIEGA_SERVICIO.search(normalizar(texto)))
 
 
 def aviso_niega_sin_mirar(fichas: list[dict[str, Any]]) -> str:

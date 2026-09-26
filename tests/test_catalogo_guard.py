@@ -389,3 +389,20 @@ async def test_si_contesta_despues_de_buscar_no_hay_vuelta_extra(respx_mock):
 
     assert enviados == ["Para esa zanja va la Retroexcavadora 406."]
     assert len(llm.calls) == 2
+
+
+def test_una_medida_con_unidad_no_es_un_modelo_mal_escrito():
+    """En vivo (2026-09-26): "zanja de 50cm" se frenó como si fuera la
+    Cargadora Shantui SL50W mal escrita."""
+    permitido = tokens_del_catalogo(
+        [{"nombre": "Cargadora Shantui SL50W", "marca": "Shantui"}, {"nombre": "Excavadora 320 DL"}]
+    )
+    assert menciones_ajenas("Te sirve para la zanja de 50cm de ancho.", permitido) == []
+    assert menciones_ajenas("Caños de 160mm, sin problema.", permitido) == []
+    assert menciones_ajenas("La Caterpillar 320L te sirve.", permitido) == ["320l"]
+
+
+def test_nombrar_una_marca_para_negarla_sigue_permitido():
+    """El detector de negativas de servicio no puede pisar al de marcas."""
+    permitido = tokens_del_catalogo([{"nombre": "Excavadora 320 DL", "marca": "Caterpillar"}])
+    assert menciones_ajenas("No, Bobcat la verdad que no la manejamos.", permitido) == []

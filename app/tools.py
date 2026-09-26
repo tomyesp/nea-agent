@@ -824,6 +824,16 @@ class ToolRuntime:
                 "el trabajo necesita un implemento, ofrecé la máquina que lo "
                 "tiene."
                 + (
+                    "\nANTES DE RECOMENDAR, leé `cuando_elegirla` en las specs: "
+                    "dice para qué tamaño de trabajo va esa máquina y cuándo va "
+                    "otra. Si una de estas dice que para un trabajo como el del "
+                    "lead va primero otra máquina (por ejemplo, la "
+                    "retroexcavadora para zanjas y pozos chicos), buscá esa y "
+                    "recomendá esa."
+                    if any((m.get("specs") or {}).get("cuando_elegirla") for m in modelos)
+                    else ""
+                )
+                + (
                     f"\nEl lead tiene que pasar por {paso.describir()}. El "
                     "campo `acceso` de cada máquina lo calculó el sistema y "
                     "MANDA sobre cualquier cuenta tuya: 'no' = no la "
