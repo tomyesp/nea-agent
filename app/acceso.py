@@ -103,7 +103,29 @@ def hablo_de_un_acceso(textos: list[str]) -> bool:
     una "zanja de 60 cm de ancho" le contestó que no podía asegurarle que la
     excavadora pasara por 60 cm (2026-09-19). El ancho de la zanja no es una
     puerta."""
-    return any(_ES_UN_ACCESO.search(normalizar(t or "")) for t in textos or [])
+    return any(
+        not _acceso_sin_problema(texto, m)
+        for texto in (normalizar(t or "") for t in textos or [])
+        for m in _ES_UN_ACCESO.finditer(texto)
+    )
+
+
+#: "Sin problemas de acceso", "no hay limitaciones de acceso", "el acceso es
+#: libre": nombra el acceso para decir que NO limita. Pasó en vivo (2026-09-26):
+#: "es tierra normal, sin problemas de acceso, la zanja de unos 50 cm de
+#: ancho" — el modelo mandó los 50 cm de la zanja como paso, y como el lead
+#: había dicho "acceso", valió: Nea contestó que la minicargadora no entraba.
+_SIN_PROBLEMA_ANTES = re.compile(r"\b(?:sin|no hay|no tengo|no tiene|ningun\w*)\b[^.,;:]*$")
+_SIN_PROBLEMA_DESPUES = re.compile(
+    r"^\w*\s*(?:es\s+|esta\s+)?(?:libre|amplio|amplia|bueno|buena|comodo|comoda|"
+    r"sin problemas?|sin limitaciones?|sin restricciones?)\b"
+)
+
+
+def _acceso_sin_problema(texto: str, m: re.Match[str]) -> bool:
+    antes = texto[max(0, m.start() - 30) : m.start()]
+    despues = texto[m.end() : m.end() + 30].lstrip()
+    return bool(_SIN_PROBLEMA_ANTES.search(antes) or _SIN_PROBLEMA_DESPUES.search(despues))
 
 
 def metros_de(valor: Any) -> float | None:

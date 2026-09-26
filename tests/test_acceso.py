@@ -295,6 +295,11 @@ def test_frena_el_entra_por_un_porton_bajo():
         # "cable subterráneo" NO es un cable aéreo que estorbe por arriba.
         (["tengo una obra de cable subterráneo de 2 km en zona céntrica"], False),
         (["necesito 30 pozos de 20 cm"], False),
+        # Nombra el acceso para decir que NO limita (en vivo, 2026-09-26).
+        (["es tierra normal, sin problemas de acceso, la zanja de unos 50 cm de ancho"], False),
+        (["no hay limitaciones de acceso, zanja de 50 cm"], False),
+        (["el acceso es libre, la zanja es de 40 cm"], False),
+        (["el portón no es problema pero el pasillo tiene 1,20 m"], True),
     ],
 )
 def test_reconoce_si_el_lead_hablo_de_un_acceso(textos, esperado):
