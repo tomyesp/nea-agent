@@ -168,6 +168,10 @@ def test_asesora_con_las_tareas_de_la_ficha():
     assert "leé `specs.tareas` de cada ficha" in p
     assert "`specs.no_hace` es lo que NO hace" in p
     assert "`specs.alcance` es orientativo" in p
+    # Decisión del dueño (2026-09-26): para trabajos chicos, la retro antes
+    # que la excavadora de 21 t (eligió la 320 DL para bajar caños de PVC).
+    assert "`specs.cuando_elegirla`" in p
+    assert "la retroexcavadora antes que la excavadora grande" in p
 
 
 def test_compara_el_paso_con_el_ancho_antes_de_recomendar():

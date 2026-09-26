@@ -441,6 +441,7 @@ def aviso_niega_sin_mirar(fichas: list[dict[str, Any]]) -> str:
             "descripcion": f.get("descripcion"),
             "tareas": (f.get("specs") or {}).get("tareas"),
             "no_hace": (f.get("specs") or {}).get("no_hace"),
+            "cuando_elegirla": (f.get("specs") or {}).get("cuando_elegirla"),
         }
         for f in fichas
     ]
