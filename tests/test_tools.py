@@ -940,3 +940,58 @@ async def test_sin_inventario_se_apagan_las_tools_de_maquinaria(
     assert "buscar_maquinas" not in nombres
     assert "crear_reserva_tentativa" not in nombres
     assert {"update_ficha", "handoff", "route_out"} <= nombres
+
+
+async def test_si_busca_la_excavadora_vienen_tambien_las_retros(runtime_y_ctx, respx_mock):
+    """Decisión del dueño (2026-09-26): para trabajos chicos, la retro antes que
+    la excavadora de 21 t. En vivo Gemini buscaba "Excavadora 320 DL" por
+    nombre y nunca veía las retros."""
+    runtime, ctx, conv = runtime_y_ctx
+    excavadora = {
+        "modeloId": "mmod_320",
+        "nombre": "Excavadora 320 DL",
+        "categoria": "Excavadoras",
+        "specs": {
+            "cuando_elegirla": "Para trabajos grandes; para chicos va la retro.",
+            "trabajos_chicos_categoria": "Retroexcavadoras",
+        },
+        "tarifa": {"horaCents": 20_000_000},
+    }
+    retro = {
+        "modeloId": "mmod_406",
+        "nombre": "Retroexcavadora 406",
+        "categoria": "Retroexcavadoras",
+        "specs": {"cuando_elegirla": "Primera opción para trabajos chicos."},
+        "tarifa": {"horaCents": 17_641_000},
+    }
+
+    def catalogo(request):
+        filtrada = "q" in request.url.params
+        return httpx.Response(
+            200, json={"categorias": [], "modelos": [excavadora] if filtrada else [excavadora, retro]}
+        )
+
+    respx_mock.get(f"{CRM_URL}/api/bot/catalogo").mock(side_effect=catalogo)
+    result = await runtime.execute("buscar_maquinas", {"consulta": "Excavadora 320 DL"})
+
+    assert [m["nombre"] for m in result["maquinas"]] == ["Excavadora 320 DL", "Retroexcavadora 406"]
+    assert result["maquinas"][1]["cuando_elegirla"] == "Primera opción para trabajos chicos."
+    assert "sumé Retroexcavadora 406" in result["instrucciones"]
+
+
+async def test_si_la_retro_ya_vino_no_se_duplica(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    modelos = [
+        {"modeloId": "a", "nombre": "Excavadora 320 DL", "categoria": "Excavadoras",
+         "specs": {"trabajos_chicos_categoria": "Retroexcavadoras"}, "tarifa": {}},
+        {"modeloId": "b", "nombre": "Retroexcavadora 406", "categoria": "Retroexcavadoras",
+         "specs": {}, "tarifa": {}},
+    ]
+    route = respx_mock.get(f"{CRM_URL}/api/bot/catalogo").mock(
+        return_value=httpx.Response(200, json={"categorias": [], "modelos": modelos})
+    )
+    result = await runtime.execute("buscar_maquinas", {"consulta": "zanja"})
+
+    assert [m["nombre"] for m in result["maquinas"]] == ["Excavadora 320 DL", "Retroexcavadora 406"]
+    assert route.call_count == 1
+    assert "sumé" not in result["instrucciones"]

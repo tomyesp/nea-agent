@@ -718,6 +718,26 @@ class ToolRuntime:
             ),
         }
 
+    async def _preferidas_para_trabajos_chicos(
+        self, modelos: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Los modelos de la categoría que `specs.trabajos_chicos_categoria`
+        de algún resultado prefiere, si no vinieron ya en el resultado."""
+        presentes = {str(m.get("categoria") or "") for m in modelos}
+        faltan = {
+            str(c)
+            for m in modelos
+            if (c := (m.get("specs") or {}).get("trabajos_chicos_categoria"))
+        } - presentes
+        if not faltan:
+            return []
+        try:
+            data = await self._ctx.crm.get_catalogo(None)
+        except (InventoryUnavailable, CrmError) as exc:
+            logger.info("tools: no pude sumar las preferidas para trabajos chicos (%s)", exc)
+            return []
+        return [m for m in (data.get("modelos") or []) if m.get("categoria") in faltan]
+
     async def _buscar_maquinas(self, args: dict[str, Any]) -> dict[str, Any]:
         consulta = str(args.get("consulta") or "").strip()
         try:
@@ -747,6 +767,14 @@ class ToolRuntime:
                     "derecho y no nombres ninguna máquina."
                 ),
             }
+        # Para trabajos chicos el dueño prefiere otra categoría (la retro antes
+        # que la excavadora de 21 t, 2026-09-26). Gemini decidía de memoria
+        # "Excavadora 320 DL", buscaba ESE nombre y nunca veía las retros —
+        # con la preferencia escrita en la ficha y en la instrucción, igual
+        # la recomendaba. Así que las que el dueño prefiere vienen en el
+        # mismo resultado.
+        preferidas = await self._preferidas_para_trabajos_chicos(modelos)
+        modelos = modelos + preferidas
         # La medida que mande el modelo gana a la que se leyó en los mensajes,
         # pero solo si el lead habló de un acceso: si no, lo que manda es una
         # medida de la obra (el ancho de la zanja, por ejemplo).
@@ -777,6 +805,8 @@ class ToolRuntime:
                     "minimo_horas": tarifa.get("minimoHoras") or None,
                 }
             )
+            if (m.get("specs") or {}).get("cuando_elegirla"):
+                maquinas[-1]["cuando_elegirla"] = m["specs"]["cuando_elegirla"]
             self.modelos_vistos[str(m.get("nombre") or "")] = m.get("specs") or {}
             if m.get("modeloId"):
                 self._nombre_por_id[str(m["modeloId"])] = str(m.get("nombre") or "")
@@ -802,6 +832,14 @@ class ToolRuntime:
                 "nada parecido, decíselo y ofrecé lo que sí hay.\n"
             )
         )
+        if preferidas:
+            aviso += (
+                "OJO: sumé "
+                + ", ".join(str(m.get("nombre")) for m in preferidas)
+                + " aunque no las buscaste: para trabajos chicos el negocio "
+                "las prefiere a las que buscaste (mirá `cuando_elegirla`). Si el "
+                "trabajo del lead es chico, recomendá esas.\n"
+            )
         return {
             "ok": True,
             "coincidencia": coincidio,
