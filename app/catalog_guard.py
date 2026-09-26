@@ -306,6 +306,18 @@ def maquinas_nombradas(texto: str | None, fichas: list[dict[str, Any]]) -> list[
     return [f for f in fichas if alias_de(str(f.get("nombre") or "")) & palabras]
 
 
+def _precio_por_hora(ficha: dict[str, Any]) -> str | None:
+    """En pesos, como lo muestra buscar_maquinas: el CRM manda CENTAVOS, y un
+    `horaCents` crudo bajo el nombre `precio_por_hora` es un precio cien veces
+    más caro esperando a que el modelo lo copie."""
+    tarifa = ficha.get("tarifa")
+    cents = tarifa.get("horaCents") if isinstance(tarifa, dict) else None
+    try:
+        return "$" + f"{int(cents) // 100:,}".replace(",", ".")
+    except (TypeError, ValueError):
+        return None
+
+
 def aviso_sin_mirar_el_catalogo(fichas: list[dict[str, Any]]) -> str:
     """La ficha REAL, metida en el turno.
 
@@ -321,7 +333,7 @@ def aviso_sin_mirar_el_catalogo(fichas: list[dict[str, Any]]) -> str:
             "marca": f.get("marca"),
             "categoria": f.get("categoria"),
             "specs": f.get("specs") or {},
-            "precio_por_hora": f.get("tarifa", {}).get("horaCents") if isinstance(f.get("tarifa"), dict) else None,
+            "precio_por_hora": _precio_por_hora(f),
             "unidades_en_flota": f.get("unidades"),
         }
         for f in fichas
@@ -401,3 +413,47 @@ PREGUNTA_SEGURA = (
     "paso una máquina que no tenemos. ¿Me contás de nuevo qué trabajo tenés "
     "que hacer y en qué espacio?"
 )
+
+
+#: Negar un servicio de memoria sale tan caro como inventar una máquina.
+#: Pasó en vivo (2026-09-26): "llevar mi excavadora de Perico a Humahuaca" →
+#: "No hacemos fletes de máquinas de terceros", sin mirar el catálogo — y los
+#: tractores salen con carretón para transportar maquinaria.
+_NIEGA = re.compile(
+    r"\bno\s+(?:lo\s+|la\s+|los\s+|las\s+|eso\s+)?"
+    r"(?:hacemos|tenemos|ofrecemos|alquilamos|brindamos|realizamos|prestamos|"
+    r"damos|manejamos|contamos\s+con|trabajamos\s+con)\b"
+)
+
+
+def niega_un_servicio(texto: str | None) -> bool:
+    """¿La respuesta le dice al lead que el negocio NO hace o NO tiene algo?"""
+    return bool(texto) and bool(_NIEGA.search(normalizar(texto)))
+
+
+def aviso_niega_sin_mirar(fichas: list[dict[str, Any]]) -> str:
+    """El catálogo entero con lo que hace cada máquina, para que mire antes
+    de negar."""
+    resumen = [
+        {
+            "nombre": f.get("nombre"),
+            "categoria": f.get("categoria"),
+            "descripcion": f.get("descripcion"),
+            "tareas": (f.get("specs") or {}).get("tareas"),
+            "no_hace": (f.get("specs") or {}).get("no_hace"),
+        }
+        for f in fichas
+    ]
+    return (
+        "AVISO DEL SISTEMA — le estás diciendo al lead que el negocio NO hace "
+        "o NO tiene algo, y en este turno no miraste el catálogo. Tu respuesta "
+        "todavía no salió. Este es el catálogo COMPLETO, con lo que hace cada "
+        "máquina:\n"
+        + json.dumps(resumen, ensure_ascii=False)
+        + "\nFijate si alguna hace lo que pide el lead. Si alguna lo hace, "
+        "ofrecela (llamá buscar_maquinas para tener su ficha y su precio). "
+        "Si ninguna lo hace, decilo derecho. Y no inventes cómo trabaja el "
+        "negocio: si la pregunta es de política (a quién le presta servicio, "
+        "qué hace o no hace RPM) y el catálogo no la contesta, que la vea un "
+        "asesor."
+    )

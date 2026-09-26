@@ -12,8 +12,10 @@ import httpx
 import pytest
 
 from app.catalog_guard import (
+    aviso_sin_mirar_el_catalogo,
     limpiar_cache,
     menciones_ajenas,
+    niega_un_servicio,
     tokens_del_catalogo,
 )
 from app.llm import LlmReply, ToolCall
@@ -277,3 +279,68 @@ async def test_una_respuesta_sin_maquinas_no_paga_vuelta_extra(respx_mock):
 
     assert enviados == ["¿En qué localidad es la obra?"]
     assert len(llm.calls) == 1
+
+
+def test_la_ficha_que_se_le_pasa_trae_el_precio_en_pesos_no_en_centavos():
+    """El CRM manda centavos: 17641000 bajo `precio_por_hora` es un precio
+    cien veces más caro esperando a que el modelo lo copie."""
+    aviso = aviso_sin_mirar_el_catalogo(CATALOGO["modelos"][:1])
+    assert '"precio_por_hora": "$176.410"' in aviso
+    assert "17641000" not in aviso
+
+
+# ------------------------- negar un servicio exige mirar el catálogo ---
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "No hacemos fletes de máquinas de terceros, solo de nuestra flota.",
+        "Eso no lo ofrecemos, perdón.",
+        "No contamos con transporte para eso.",
+        "Bobcat no tenemos.",
+    ],
+)
+def test_detecta_cuando_niega_un_servicio(texto):
+    assert niega_un_servicio(texto)
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "No hay problema, ¿en qué localidad es la obra?",
+        "¿No tenés el ancho del portón?",
+        "Te recomiendo la Retroexcavadora 406.",
+    ],
+)
+def test_no_confunde_cualquier_no_con_una_negativa(texto):
+    assert not niega_un_servicio(texto)
+
+
+async def test_si_niega_sin_mirar_el_catalogo_se_le_pasa_el_catalogo(respx_mock):
+    """En vivo (2026-09-26): "llevar mi excavadora de Perico a Humahuaca" →
+    "No hacemos fletes de máquinas de terceros", sin mirar. Los tractores
+    salen con carretón para transportar maquinaria."""
+    llm = FakeLLM(
+        replies=[
+            LlmReply(content="No hacemos fletes de máquinas de terceros."),
+            LlmReply(content="¿La excavadora es tuya? Contame cuánto pesa y lo vemos."),
+        ]
+    )
+    result, routes, enviados = await _turno(respx_mock, llm, texto="necesito llevar mi excavadora")
+
+    assert enviados == ["¿La excavadora es tuya? Contame cuánto pesa y lo vemos."]
+    avisos = [
+        m["content"]
+        for m in llm.calls[-1]["messages"]
+        if m["role"] == "system" and "NO hace o NO tiene algo" in str(m["content"])
+    ]
+    assert len(avisos) == 1 and "Motoniveladora 140H" in avisos[0]
+
+
+async def test_si_ya_miro_el_catalogo_puede_negar_sin_vuelta_extra(respx_mock):
+    llm = FakeLLM(replies=[BUSCAR, LlmReply(content="Eso no lo tenemos, perdón.")])
+    result, routes, enviados = await _turno(respx_mock, llm)
+
+    assert enviados == ["Eso no lo tenemos, perdón."]
+    assert len(llm.calls) == 2

@@ -42,12 +42,14 @@ from app.catalog_guard import (
     PREGUNTA_SEGURA as CATALOGO_PREGUNTA_SEGURA,
     alerta_implemento_ajeno,
     alerta_maquinas_ajenas,
+    aviso_niega_sin_mirar,
     aviso_sin_mirar_el_catalogo,
     fichas_del_crm,
     implementos_mal_colgados,
     maquinas_nombradas,
     menciones_ajenas,
     modelos_del_crm,
+    niega_un_servicio,
     permitido_del_crm,
 )
 from app.format import to_whatsapp
@@ -373,6 +375,9 @@ async def run_turn(
     # Antes que nada: si nombró una máquina sin haber mirado el catálogo, la
     # ficha real se le pone delante y reescribe (app/catalog_guard.py).
     final_text = await _con_la_ficha_a_la_vista(ctx, identity, messages, runtime, final_text)
+    # …ni negar un servicio de memoria ("no hacemos fletes"): el catálogo
+    # puede decir lo contrario.
+    final_text = await _sin_negar_de_memoria(ctx, identity, messages, runtime, final_text)
 
     # …ni que le cuelgue el martillo de la minicargadora a una excavadora
     # (app/catalog_guard.py).
@@ -593,6 +598,39 @@ async def _con_la_ficha_a_la_vista(
         return final_text
     # Si la vuelta con la ficha delante no dio texto, vale el borrador: las
     # otras guardas siguen mirándolo.
+    return segundo if segundo and segundo.strip() else final_text
+
+
+async def _sin_negar_de_memoria(
+    ctx: AppContext,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """Decir que el negocio NO hace algo exige haber mirado el catálogo.
+
+    Pasó en vivo (2026-09-26): "necesito llevar una excavadora mía de Perico a
+    Humahuaca" → "No hacemos fletes de máquinas de terceros", sin una sola
+    llamada. Los tractores de RPM salen con carretón para transportar
+    maquinaria. Si el turno no tocó el catálogo, el catálogo entra al turno y
+    el modelo revisa antes de negar."""
+    if not ctx.inventory_enabled or runtime.miro_catalogo or not niega_un_servicio(final_text):
+        return final_text
+    # Los textos armados por las otras guardas no son del modelo: "así no te
+    # paso una máquina que no tenemos" no niega ningún servicio.
+    if final_text in (CATALOGO_PREGUNTA_SEGURA, IMPLEMENTO_A_UN_ASESOR):
+        return final_text
+    fichas = await fichas_del_crm(ctx)
+    if not fichas:
+        return final_text
+    logger.info("turno %s: niega un servicio sin mirar el catálogo — que revise", identity)
+    messages.append({"role": "system", "content": aviso_niega_sin_mirar(fichas)})
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        return final_text
     return segundo if segundo and segundo.strip() else final_text
 
 
