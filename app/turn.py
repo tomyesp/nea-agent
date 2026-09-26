@@ -366,6 +366,8 @@ async def run_turn(
     # agente no escribe primero (app/promesa_guard.py). Va antes que las
     # demás guardas para que miren la respuesta que de verdad sale.
     final_text = await _sin_promesa_de_busqueda(ctx, identity, messages, runtime, final_text)
+    # …y lo que escribió ANTES de ver el catálogo no sale sin que lo lea.
+    final_text = await _sin_respuesta_a_ciegas(ctx, identity, messages, runtime, final_text)
 
     # Una reserva que el modelo da por hecha sin que nada se haya reservado no
     # sale: se le avisa, tiene una vuelta para reservar o corregirse, y si
@@ -628,6 +630,40 @@ async def _sin_promesa_de_busqueda(
     return segundo if segundo and segundo.strip() else final_text
 
 
+async def _sin_respuesta_a_ciegas(
+    ctx: AppContext,
+    identity: str,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    final_text: str | None,
+) -> str | None:
+    """El texto escrito junto a buscar_maquinas se escribió sin ver el
+    resultado. Si el modelo después no contestó, ese borrador es memoria pura:
+    se le cita y tiene una vuelta para reescribirlo con lo que devolvió el
+    catálogo."""
+    if not runtime.a_ciegas or not final_text:
+        return final_text
+    runtime.a_ciegas = False
+    logger.info("turno %s: la respuesta se escribió antes de ver el catálogo — que la relea", identity)
+    messages.append({"role": "system", "content": AVISO_A_CIEGAS.format(borrador=final_text)})
+    try:
+        segundo = await _tool_loop(ctx, messages, runtime)
+    except LlmExhausted as exc:
+        logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
+        return final_text
+    return segundo if segundo and segundo.strip() else final_text
+
+
+AVISO_A_CIEGAS = (
+    "AVISO DEL SISTEMA — esta respuesta la escribiste ANTES de ver lo que "
+    "devolvieron las herramientas, y todavía no salió: «{borrador}». Leé los "
+    "resultados de arriba y escribí la respuesta con ESOS datos: nombre exacto, "
+    "specs tal cual y `cuando_elegirla`. Si para este trabajo conviene otra "
+    "máquina, buscala antes de nombrarla. Escribí la respuesta completa para "
+    "el lead."
+)
+
+
 async def _sin_negar_de_memoria(
     ctx: AppContext,
     identity: str,
@@ -871,6 +907,12 @@ async def _tool_loop(
     # Lo último que el modelo escribió junto a herramientas que sí informan
     # (catálogo, disponibilidad…): si después no contesta, eso es lo que dijo.
     dicho: str | None = None
+    # ¿Ese texto se escribió junto a una consulta al catálogo, sin haber visto
+    # el resultado? Pasó en vivo (2026-09-26): "te recomiendo la Excavadora
+    # 320 DL, balde de 1,20 m" + buscar_maquinas("Excavadora 320 DL") en la
+    # misma vuelta, después tres respuestas vacías, y salió el borrador con
+    # specs inventadas — y como "había buscado", ninguna guarda lo frenó.
+    dicho_a_ciegas = False
     for _ in range(MAX_TOOL_ROUNDS):
         try:
             reply = await ctx.llm.complete(
@@ -882,10 +924,14 @@ async def _tool_loop(
                     "turno: el modelo no contestó después de las herramientas — "
                     "sale lo que ya había escrito"
                 )
+                runtime.a_ciegas = dicho_a_ciegas
                 return dicho
             raise
         if not reply.tool_calls:
-            return reply.content or dicho  # turno de puro texto
+            if reply.content:
+                return reply.content  # turno de puro texto
+            runtime.a_ciegas = dicho_a_ciegas and dicho is not None
+            return dicho
         # content vacío con tool_calls es normal (turno solo-herramientas)
         messages.append(
             {
@@ -917,7 +963,9 @@ async def _tool_loop(
             if all(tc.name in HERRAMIENTAS_SILENCIOSAS for tc in reply.tool_calls):
                 return reply.content
             dicho = reply.content
+            dicho_a_ciegas = any(tc.name in ToolRuntime.DEL_CATALOGO for tc in reply.tool_calls)
     logger.warning("turno: demasiadas rondas de herramientas — corto")
+    runtime.a_ciegas = dicho_a_ciegas and dicho is not None
     return dicho
 
 

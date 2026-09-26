@@ -344,3 +344,48 @@ async def test_si_ya_miro_el_catalogo_puede_negar_sin_vuelta_extra(respx_mock):
 
     assert enviados == ["Eso no lo tenemos, perdón."]
     assert len(llm.calls) == 2
+
+
+# ------------------------- lo escrito antes de ver el catálogo ---
+
+
+async def test_lo_escrito_junto_a_la_busqueda_no_sale_sin_releer(respx_mock):
+    """En vivo (2026-09-26): escribió "la Excavadora 320 DL, balde de 1,20 m"
+    en la misma vuelta que la buscaba, después no contestó, y salió el
+    borrador con specs de memoria."""
+    a_ciegas = LlmReply(
+        content="Te recomiendo la Motoniveladora 140H, que excava hasta 9 m.",
+        tool_calls=[ToolCall(id="c1", name="buscar_maquinas", arguments={"consulta": "zanja"})],
+    )
+    llm = FakeLLM(
+        replies=[
+            a_ciegas,
+            LlmReply(content=None),  # no contesta después de la búsqueda
+            LlmReply(content="Para esa zanja va la Retroexcavadora 406, balde de 1 m3."),
+        ]
+    )
+    result, routes, enviados = await _turno(respx_mock, llm)
+
+    assert enviados == ["Para esa zanja va la Retroexcavadora 406, balde de 1 m3."]
+    avisos = [
+        m["content"]
+        for m in llm.calls[-1]["messages"]
+        if m["role"] == "system" and "ANTES de ver" in str(m["content"])
+    ]
+    assert len(avisos) == 1 and "excava hasta 9 m" in avisos[0]
+
+
+async def test_si_contesta_despues_de_buscar_no_hay_vuelta_extra(respx_mock):
+    llm = FakeLLM(
+        replies=[
+            LlmReply(
+                content="Dejame ver.",
+                tool_calls=[ToolCall(id="c1", name="buscar_maquinas", arguments={"consulta": "zanja"})],
+            ),
+            LlmReply(content="Para esa zanja va la Retroexcavadora 406."),
+        ]
+    )
+    result, routes, enviados = await _turno(respx_mock, llm)
+
+    assert enviados == ["Para esa zanja va la Retroexcavadora 406."]
+    assert len(llm.calls) == 2

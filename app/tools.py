@@ -605,6 +605,9 @@ class ToolRuntime:
         #: ¿El turno fue al catálogo del CRM? Si no, una máquina nombrada en la
         #: respuesta salió de la memoria del modelo.
         self.miro_catalogo = False
+        # La respuesta que sale es texto escrito JUNTO a una búsqueda, antes
+        # de ver lo que devolvió: el modelo no contestó después (turn.py).
+        self.a_ciegas = False
         # Lo que se consultó de disponibilidad en este turno {nombre: ¿libre?}
         # y cómo se llama cada modelo_id. Con eso, turn.py frena una falta de
         # stock inventada (app/stock_guard.py).
