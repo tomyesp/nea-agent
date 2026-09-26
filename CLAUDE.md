@@ -116,6 +116,17 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   una máquina del catálogo, `turn.py` le mete la ficha real como aviso del
   sistema y la hace reescribir. Validar el NOMBRE no alcanzaba: a un lead real
   le recomendó "una Miniexcavadora 8018 CTS" con medidas, todo de memoria.
+  Lo mismo para NEGAR ("no hacemos fletes de máquinas de terceros", dicho
+  sin mirar con tractores y carretón en la flota): la respuesta que niega un
+  servicio sin haber mirado recibe el catálogo entero y se revisa. Y un "te
+  busco las opciones" sin buscar (`app/promesa_guard.py`) tiene una vuelta
+  más para buscar de verdad: el agente no escribe primero, así que ese
+  anuncio deja al lead esperando algo que nunca llega.
+- **Qué hace cada máquina es dato del dueño**: `specs.tareas` (trabajos),
+  `specs.no_hace` (retros y excavadoras NO llevan martillo) y
+  `specs.alcance` (orientativo). La DESCRIPCIÓN lleva una línea "Sirve
+  para: …" con las palabras de búsqueda; si se la cambia, correr la batería
+  de consultas contra `catalog-search.ts` y comparar antes/después.
 - **Los implementos son datos, no código.** RPM alquila la minicargadora con
   el implemento que pide el trabajo (martillo, hoyadora, zanjeadora…),
   incluido en la hora. Viven en `specs.implementos` del modelo en el CRM,
