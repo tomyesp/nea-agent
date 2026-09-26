@@ -126,7 +126,14 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   `specs.no_hace` (retros y excavadoras NO llevan martillo) y
   `specs.alcance` (orientativo). La DESCRIPCIÓN lleva una línea "Sirve
   para: …" con las palabras de búsqueda; si se la cambia, correr la batería
-  de consultas contra `catalog-search.ts` y comparar antes/después.
+  de consultas contra `catalog-search.ts` y comparar antes/después. Cuando
+  dos máquinas sirven, `specs.cuando_elegirla` dice cuál va; y si una
+  excavadora trae `specs.trabajos_chicos_categoria`, buscar_maquinas suma esa
+  categoría (las retros) al resultado: con la preferencia solo en la ficha,
+  Gemini buscaba la excavadora por nombre y no veía las retros.
+- **Lo escrito junto a buscar_maquinas se escribió sin ver el resultado.** Si
+  después el modelo no contesta, `_tool_loop` marca `runtime.a_ciegas` y ese
+  borrador no sale sin que lo relea con el resultado a la vista.
 - **Los implementos son datos, no código.** RPM alquila la minicargadora con
   el implemento que pide el trabajo (martillo, hoyadora, zanjeadora…),
   incluido en la hora. Viven en `specs.implementos` del modelo en el CRM,
