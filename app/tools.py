@@ -589,8 +589,12 @@ class ToolRuntime:
         ancho_paso_m: float | None = None,
         alto_paso_m: float | None = None,
         hablo_de_acceso: bool = False,
+        carreton: str | None = None,
     ) -> None:
         self._ctx = ctx
+        # Si el lead quiere trasladar una máquina, si va en el carretón lo
+        # calculó el código con el peso y el tipo que dijo (app/traslado.py).
+        self._carreton = carreton
         # El paso (ancho y/o alto) que dijo el lead en sus mensajes
         # (app/acceso.py): si el modelo no lo manda al buscar, las máquinas
         # vuelven igual con su veredicto de acceso.
@@ -813,6 +817,11 @@ class ToolRuntime:
             # Dicho con todas las letras: con el martillo de la minicargadora
             # en el catálogo, el modelo se lo colgó a una excavadora que no lo
             # lleva ("excavadora con martillo hidráulico", 2026-09-19).
+            if self._carreton and any(
+                isinstance(i, dict) and i.get("es_acoplado")
+                for i in (m.get("specs") or {}).get("implementos") or []
+            ):
+                maquinas[-1]["carreton_para_lo_del_lead"] = self._carreton
             if not (m.get("specs") or {}).get("implementos"):
                 maquinas[-1]["implementos"] = (
                     "NINGUNO: esta máquina no lleva implementos intercambiables, "
@@ -832,6 +841,12 @@ class ToolRuntime:
                 "nada parecido, decíselo y ofrecé lo que sí hay.\n"
             )
         )
+        if self._carreton and any("carreton_para_lo_del_lead" in m for m in maquinas):
+            aviso += (
+                "`carreton_para_lo_del_lead` lo calculó el sistema con el peso y "
+                "el tipo de máquina que dijo el lead, y MANDA sobre cualquier "
+                "cuenta tuya: repetí ese veredicto, no lo recalcules.\n"
+            )
         if preferidas:
             aviso += (
                 "OJO: sumé "

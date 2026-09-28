@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from app import media
 from app.config import canonical_identity
+from app.traslado import veredicto_carreton
 from app.promesa_guard import AVISO as PROMESA_AVISO, anuncia_una_busqueda
 from app.stock_guard import (
     PREGUNTA_SEGURA as STOCK_PREGUNTA_SEGURA,
@@ -347,6 +348,9 @@ async def run_turn(
         ancho_paso_m=paso_del_lead(del_lead),
         alto_paso_m=alto_del_lead(del_lead),
         hablo_de_acceso=hablo_de_un_acceso(del_lead),
+        # Si quiere trasladar SU máquina, si va en el carretón también lo
+        # calcula el código (app/traslado.py).
+        carreton=veredicto_carreton(del_lead),
     )
     try:
         final_text = await _tool_loop(ctx, messages, runtime)
