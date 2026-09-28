@@ -29,6 +29,7 @@ from app.crm import (
 )
 from app.acceso import Paso, ficha_para_el_paso, metros_de
 from app.catalog_guard import fichas_del_crm
+from app.traslado import carretones_de, veredicto_carreton
 from app.fechas import parse_instante, rango_de_uso, vista_de_periodo
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, RentalOffer
@@ -590,12 +591,12 @@ class ToolRuntime:
         ancho_paso_m: float | None = None,
         alto_paso_m: float | None = None,
         hablo_de_acceso: bool = False,
-        carreton: str | None = None,
+        del_lead: list[str] | None = None,
     ) -> None:
         self._ctx = ctx
-        # Si el lead quiere trasladar una máquina, si va en el carretón lo
-        # calculó el código con el peso y el tipo que dijo (app/traslado.py).
-        self._carreton = carreton
+        # Si el lead quiere trasladar una máquina, en qué carretón va lo
+        # calcula el código con el peso y el tipo que dijo (app/traslado.py).
+        self._del_lead = list(del_lead or [])
         # El paso (ancho y/o alto) que dijo el lead en sus mensajes
         # (app/acceso.py): si el modelo no lo manda al buscar, las máquinas
         # vuelven igual con su veredicto de acceso.
@@ -825,11 +826,11 @@ class ToolRuntime:
             if (m.get("specs") or {}).get("precio_con_asesor"):
                 maquinas[-1]["precio_por_hora"] = None
                 maquinas[-1]["precio"] = "Lo pasa un asesor: no digas ningún número para esta máquina. Contá qué es y para qué sirve, y ofrecé pasarlo con un asesor."
-            if self._carreton and any(
-                isinstance(i, dict) and i.get("es_acoplado")
-                for i in (m.get("specs") or {}).get("implementos") or []
-            ):
-                maquinas[-1]["carreton_para_lo_del_lead"] = self._carreton
+            carretones = carretones_de(m.get("specs"))
+            if carretones and self._del_lead:
+                veredicto = veredicto_carreton(self._del_lead, carretones)
+                if veredicto:
+                    maquinas[-1]["carreton_para_lo_del_lead"] = veredicto
             if not (m.get("specs") or {}).get("implementos"):
                 maquinas[-1]["implementos"] = (
                     "NINGUNO: esta máquina no lleva implementos intercambiables, "
@@ -849,7 +850,7 @@ class ToolRuntime:
                 "nada parecido, decíselo y ofrecé lo que sí hay.\n"
             )
         )
-        if self._carreton and any("carreton_para_lo_del_lead" in m for m in maquinas):
+        if any("carreton_para_lo_del_lead" in m for m in maquinas):
             aviso += (
                 "`carreton_para_lo_del_lead` lo calculó el sistema con el peso y "
                 "el tipo de máquina que dijo el lead, y MANDA sobre cualquier "
