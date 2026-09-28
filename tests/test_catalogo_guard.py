@@ -423,3 +423,23 @@ def test_el_carreton_lleva_maquinas_no_se_les_cuelga():
     assert implementos_mal_colgados("La Retroexcavadora 406 va en el carretón.", modelos) == []
     # El martillo sigue siendo de la mini.
     assert implementos_mal_colgados("La Retroexcavadora 406 con martillo te sirve.", modelos)
+
+
+def test_la_maquina_del_lead_se_puede_nombrar():
+    """En vivo (2026-09-28): un lead quería trasladar SU retro JCB 3CX y la
+    respuesta se frenaba por nombrar JCB."""
+    permitido = tokens_del_catalogo([{"nombre": "Retroexcavadora 416E", "marca": "Caterpillar"}])
+    del_lead = ["es una retro JCB 3CX mía, pesa unas 8 toneladas"]
+    assert menciones_ajenas("Tu JCB 3CX entra en el carretón.", permitido, del_lead) == []
+    # Ofrecerla como nuestra sigue sin salir.
+    assert menciones_ajenas("Te alquilo la JCB 3CX.", permitido, del_lead)
+    # Y una marca que el lead NO nombró tampoco, aunque se hable de lo suyo.
+    assert menciones_ajenas("Tu obra la hace una Bobcat.", permitido, del_lead) == ["bobcat"]
+
+
+@pytest.mark.parametrize(
+    "texto",
+    ["No puedo ofrecerte algo para mover tu máquina.", "No podemos trasladar máquinas de terceros."],
+)
+def test_no_puedo_ofrecer_tambien_es_negar(texto):
+    assert niega_un_servicio(texto)

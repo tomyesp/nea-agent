@@ -378,7 +378,9 @@ async def run_turn(
 
     # …y que no nombre una máquina que el negocio no tiene
     # (app/catalog_guard.py).
-    final_text = await _sin_maquinas_ajenas(ctx, identity, messages, runtime, final_text)
+    final_text = await _sin_maquinas_ajenas(
+        ctx, identity, messages, runtime, final_text, del_lead
+    )
 
     # Antes que nada: si nombró una máquina sin haber mirado el catálogo, la
     # ficha real se le pone delante y reescribe (app/catalog_guard.py).
@@ -537,6 +539,7 @@ async def _sin_maquinas_ajenas(
     messages: list[dict[str, Any]],
     runtime: ToolRuntime,
     final_text: str | None,
+    del_lead: list[str] | None = None,
 ) -> str | None:
     """Pasó en vivo: recomendó "una minicargadora Bobcat" y una "New Holland
     RG140". La flota no las tiene y el lead termina pidiéndole al asesor una
@@ -544,7 +547,7 @@ async def _sin_maquinas_ajenas(
     if not ctx.inventory_enabled or not final_text:
         return final_text
     permitido = await permitido_del_crm(ctx)
-    ajenas = menciones_ajenas(final_text, permitido)
+    ajenas = menciones_ajenas(final_text, permitido, del_lead)
     if not ajenas:
         return final_text
     logger.warning(
@@ -561,7 +564,7 @@ async def _sin_maquinas_ajenas(
     except LlmExhausted as exc:
         logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
         segundo = None
-    if segundo and segundo.strip() and not menciones_ajenas(segundo, permitido):
+    if segundo and segundo.strip() and not menciones_ajenas(segundo, permitido, del_lead):
         return segundo
     logger.warning(
         "turno %s: el modelo volvió a nombrar máquinas ajenas (o no contestó) "

@@ -70,6 +70,8 @@ _NO_ES_MODELO = frozenset(
 )
 #: "800m3", "20hs", "3tn": medidas, no modelos.
 _UNIDAD = re.compile(r"^\d+(m2|m3|mm|cm|km|kg|tn|ton|hs|hp|kw|kva|lts?|min|seg|t|h|m|l)$")
+#: "tu retro", "la tuya": la frase habla de la máquina del lead.
+_POSESIVO = re.compile(r"\b(?:tu|tus|tuya|tuyas|tuyo|tuyos)\b")
 #: Unidades que no dejan dudas: nadie escribe un modelo "50cm" o "160mm".
 _UNIDAD_CLARA = re.compile(r"^\d+(m2|m3|mm|cm|km|kg|tn|ton|hs|hp|kw|kva|lts|min|seg)$")
 #: "20x40", "3x2": medidas de terreno.
@@ -168,41 +170,48 @@ def _codigo_mutado(token: str, permitido: set[str]) -> bool:
     return digitos is not None and f"codigo:{digitos.group()}" in permitido
 
 
-def menciones_ajenas(texto: str | None, permitido: set[str]) -> list[str]:
+def menciones_ajenas(
+    texto: str | None, permitido: set[str], del_lead: Iterable[str] | None = None
+) -> list[str]:
     """Marcas y modelos nombrados en la respuesta que NO están en el catálogo.
 
     No cuenta nombrar una marca para decir que no la tenemos: "Bobcat no
-    tenemos, lo nuestro son las Cat" es la respuesta correcta.
+    tenemos, lo nuestro son las Cat" es la respuesta correcta. Tampoco la
+    máquina DEL LEAD: "tu JCB 3CX va en el carretón" (2026-09-28, un lead que
+    quería trasladar su propia retro) — si la frase habla de lo suyo, lo que
+    el lead escribió vale.
     """
     if not texto or not permitido:
         return []
+    suyo = set(_PALABRA.findall(normalizar(" ".join(del_lead or []))))
     ajenas: list[str] = []
     for frase in _FRASES.findall(texto):
         plana = normalizar(frase)
         if _NIEGA.search(plana):
             continue
+        ok = permitido | suyo if suyo and _POSESIVO.search(plana) else permitido
         for tipo in TIPOS:
-            if all(p in permitido for p in tipo.split()):
+            if all(p in ok for p in tipo.split()):
                 continue  # ese tipo SÍ está en el catálogo
             if re.search(rf"(?<!\w){re.escape(tipo)}(?!\w)", plana):
                 ajenas.append(tipo)
         for numero, sufijo in _CODIGO_PARTIDO.findall(plana):
-            if numero in permitido or sufijo in permitido:
+            if numero in ok or sufijo in ok:
                 continue  # "320 DL", "1722 Grúa": del catálogo
-            if sufijo in _NO_ES_MODELO or f"codigo:{numero}" in permitido:
+            if sufijo in _NO_ES_MODELO or f"codigo:{numero}" in ok:
                 continue
             ajenas.append(f"{numero} {sufijo}")
         for marca in MARCAS:
-            if marca in permitido or " " in marca and all(
-                p in permitido for p in marca.split()
+            if marca in ok or " " in marca and all(
+                p in ok for p in marca.split()
             ):
                 continue
             if re.search(rf"(?<!\w){re.escape(marca)}(?!\w)", plana):
                 ajenas.append(marca)
         for token in _PALABRA.findall(plana):
-            if token in permitido:
+            if token in ok:
                 continue
-            if _sospechoso(token) or _codigo_mutado(token, permitido):
+            if _sospechoso(token) or _codigo_mutado(token, ok):
                 ajenas.append(token)
     # Sin repetidos y en orden de aparición.
     vistas: dict[str, None] = {}
@@ -433,6 +442,8 @@ _NIEGA_SERVICIO = re.compile(
     r"\bno\s+(?:lo\s+|la\s+|los\s+|las\s+|eso\s+)?"
     r"(?:hacemos|tenemos|ofrecemos|alquilamos|brindamos|realizamos|prestamos|"
     r"damos|manejamos|contamos\s+con|trabajamos\s+con)\b"
+    r"|\bno\s+(?:te\s+|les?\s+)?(?:puedo|podemos)\s+"
+    r"(?:ofrecer|hacer|brindar|mover|trasladar|llevar|transportar)"
 )
 
 
