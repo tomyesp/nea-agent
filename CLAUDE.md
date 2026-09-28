@@ -134,6 +134,17 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
 - **Lo escrito junto a buscar_maquinas se escribió sin ver el resultado.** Si
   después el modelo no contesta, `_tool_loop` marca `runtime.a_ciegas` y ese
   borrador no sale sin que lo relea con el resultado a la vista.
+- **Traslados con carretón (2026-09-28).** El carretón es un implemento de
+  los tractores con `es_acoplado: true` (LLEVA máquinas: la guarda de
+  implementos ajenos no lo mira). Si la máquina DEL LEAD entra lo calcula
+  `app/traslado.py` con el peso y el tipo que dijo (Gemini leyó "15 a 22 t" y
+  le dijo a 15 t que "por el peso no habría problema") y viaja como
+  `carreton_para_lo_del_lead` en los tractores. La marca y el modelo de la
+  máquina del lead se pueden nombrar si la frase habla de lo suyo ("tu JCB").
+- **`specs.precio_con_asesor`**: el dueño marca una máquina cuyo precio no
+  quiere que el agente diga (los tractores, "en revisión"): buscar_maquinas y
+  la ficha no lo muestran y cotizar lo rechaza. Con el número a la vista y la
+  regla solo en el perfil, Gemini lo decía igual.
 - **Los implementos son datos, no código.** RPM alquila la minicargadora con
   el implemento que pide el trabajo (martillo, hoyadora, zanjeadora…),
   incluido en la hora. Viven en `specs.implementos` del modelo en el CRM,
