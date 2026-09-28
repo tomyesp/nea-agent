@@ -341,6 +341,8 @@ def _precio_por_hora(ficha: dict[str, Any]) -> str | None:
     """En pesos, como lo muestra buscar_maquinas: el CRM manda CENTAVOS, y un
     `horaCents` crudo bajo el nombre `precio_por_hora` es un precio cien veces
     más caro esperando a que el modelo lo copie."""
+    if (ficha.get("specs") or {}).get("precio_con_asesor"):
+        return None  # el precio lo pasa un asesor: no se le muestra
     tarifa = ficha.get("tarifa")
     cents = tarifa.get("horaCents") if isinstance(tarifa, dict) else None
     try:

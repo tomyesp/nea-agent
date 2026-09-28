@@ -68,3 +68,41 @@ async def test_el_veredicto_viaja_en_los_tractores(respx_mock):
     assert tractor["carreton_para_lo_del_lead"].startswith("A CONFIRMAR")
     assert "carreton_para_lo_del_lead" not in volquete
     assert "MANDA sobre cualquier cuenta tuya" in result["instrucciones"]
+
+
+# ------------------------- precio que lo pasa un asesor ---
+
+TRACTOR = {
+    "modeloId": "t1",
+    "nombre": "Ford Cargo 1832 - Tractor",
+    "categoria": "Camiones tractor",
+    "specs": {"precio_con_asesor": True},
+    "tarifa": {"horaCents": 44_930_500},
+}
+
+
+async def test_el_precio_en_revision_no_le_llega_al_modelo(respx_mock):
+    """El perfil dice que el precio de los tractores está en revisión y lo pasa
+    un asesor; con el número a la vista, Gemini lo dijo igual (2026-09-28)."""
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    respx_mock.get(f"{CRM_URL}/api/bot/catalogo").mock(
+        return_value=httpx.Response(200, json={"categorias": [], "modelos": [TRACTOR]})
+    )
+    runtime = ToolRuntime(ctx, conv, CRM_CONV_ID)
+    result = await runtime.execute("buscar_maquinas", {"consulta": "tractor"})
+    cotizado = await runtime.execute(
+        "cotizar", {"modelo_id": "t1", "dias": 1, "horas_por_dia": 8}
+    )
+    await ctx.crm.aclose()
+
+    assert result["maquinas"][0]["precio_por_hora"] is None
+    assert "Lo pasa un asesor" in result["maquinas"][0]["precio"]
+    assert "449" not in str(result)
+    assert cotizado["error"] == "precio_con_asesor"
+
+
+def test_la_ficha_que_se_le_pasa_tampoco_trae_el_precio():
+    from app.catalog_guard import aviso_sin_mirar_el_catalogo
+
+    assert "449" not in aviso_sin_mirar_el_catalogo([TRACTOR])

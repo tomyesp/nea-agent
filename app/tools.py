@@ -28,6 +28,7 @@ from app.crm import (
     RecentlyTaken,
 )
 from app.acceso import Paso, ficha_para_el_paso, metros_de
+from app.catalog_guard import fichas_del_crm
 from app.fechas import parse_instante, rango_de_uso, vista_de_periodo
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, RentalOffer
@@ -817,6 +818,13 @@ class ToolRuntime:
             # Dicho con todas las letras: con el martillo de la minicargadora
             # en el catálogo, el modelo se lo colgó a una excavadora que no lo
             # lleva ("excavadora con martillo hidráulico", 2026-09-19).
+            # El dueño marca las máquinas cuyo precio todavía no quiere que el
+            # agente diga (los tractores, "en revisión", 2026-09-28): con el
+            # precio a la vista, Gemini lo decía igual aunque el perfil pedía
+            # handoff.
+            if (m.get("specs") or {}).get("precio_con_asesor"):
+                maquinas[-1]["precio_por_hora"] = None
+                maquinas[-1]["precio"] = "Lo pasa un asesor: no digas ningún número para esta máquina. Contá qué es y para qué sirve, y ofrecé pasarlo con un asesor."
             if self._carreton and any(
                 isinstance(i, dict) and i.get("es_acoplado")
                 for i in (m.get("specs") or {}).get("implementos") or []
@@ -1125,6 +1133,20 @@ class ToolRuntime:
         if error is not None or resuelto is None:
             return error or _modelo_desconocido()
         model_id = resuelto
+        # Del catálogo completo (cacheado), no de lo buscado en este turno: se
+        # puede cotizar en un turno sin haber buscado.
+        ficha = next(
+            (f for f in await fichas_del_crm(self._ctx) if f.get("modeloId") == model_id), {}
+        )
+        if (ficha.get("specs") or {}).get("precio_con_asesor"):
+            return {
+                "ok": False,
+                "error": "precio_con_asesor",
+                "detalle": (
+                    "el precio de esta máquina lo pasa un asesor: no des ningún "
+                    "número; ofrecele pasarlo con un asesor (handoff)"
+                ),
+            }
         con_traslado = bool(args.get("con_traslado"))
         km = args.get("km")
         try:
