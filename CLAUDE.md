@@ -136,10 +136,13 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
   borrador no sale sin que lo relea con el resultado a la vista.
 - **Traslados con carretón (2026-09-28).** El carretón es un implemento de
   los tractores con `es_acoplado: true` (LLEVA máquinas: la guarda de
-  implementos ajenos no lo mira). Si la máquina DEL LEAD entra lo calcula
-  `app/traslado.py` con el peso y el tipo que dijo (Gemini leyó "15 a 22 t" y
-  le dijo a 15 t que "por el peso no habría problema") y viaja como
-  `carreton_para_lo_del_lead` en los tractores. La marca y el modelo de la
+  implementos ajenos no lo mira). En QUÉ carretón va la máquina DEL LEAD lo
+  calcula `app/traslado.py` con el peso y el tipo que dijo (Gemini leyó "15 a
+  22 t" y le dijo a 15 t que "por el peso no habría problema") y viaja como
+  `carreton_para_lo_del_lead` en los tractores. Los límites son DATOS de cada
+  acoplado: `carga_max_t`, `carga_sin_dudas_t`, `tipos_lleva` /
+  `tipos_a_confirmar` / `tipos_no`, y `lleva_maquinas: false` para el
+  semirremolque sin rampas. La marca y el modelo de la
   máquina del lead se pueden nombrar si la frase habla de lo suyo ("tu JCB").
 - **`specs.precio_con_asesor`**: el dueño marca una máquina cuyo precio no
   quiere que el agente diga (los tractores, "en revisión"): buscar_maquinas y
