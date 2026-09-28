@@ -318,11 +318,23 @@ async def modelos_del_crm(ctx: Any) -> dict[str, dict[str, Any]]:
 
 
 def maquinas_nombradas(texto: str | None, fichas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Las máquinas DEL CATÁLOGO que la respuesta nombra."""
+    """Las máquinas DEL CATÁLOGO que la respuesta nombra, ella o uno de sus
+    implementos: "el carretón tiene 3 m de ancho" (son 2,53 m, 2026-09-28)
+    salía de memoria igual que una máquina."""
     if not texto or not fichas:
         return []
     palabras = set(_PALABRA.findall(normalizar(texto)))
-    return [f for f in fichas if alias_de(str(f.get("nombre") or "")) & palabras]
+
+    def nombrada(f: dict[str, Any]) -> bool:
+        if alias_de(str(f.get("nombre") or "")) & palabras:
+            return True
+        implementos = (f.get("specs") or {}).get("implementos") or []
+        return any(
+            isinstance(i, dict) and alias_de(str(i.get("nombre") or "")) & palabras
+            for i in implementos
+        )
+
+    return [f for f in fichas if nombrada(f)]
 
 
 def _precio_por_hora(ficha: dict[str, Any]) -> str | None:

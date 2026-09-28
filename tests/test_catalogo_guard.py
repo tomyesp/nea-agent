@@ -443,3 +443,18 @@ def test_la_maquina_del_lead_se_puede_nombrar():
 )
 def test_no_puedo_ofrecer_tambien_es_negar(texto):
     assert niega_un_servicio(texto)
+
+
+def test_nombrar_un_implemento_tambien_exige_la_ficha():
+    """En vivo (2026-09-28): "necesito saber si tu excavadora entra en los 3
+    metros de ancho del carretón" — el carretón mide 2,53 m y no había mirado."""
+    from app.catalog_guard import maquinas_nombradas
+
+    fichas = [
+        {"nombre": "Ford Cargo 1832 - Tractor",
+         "specs": {"implementos": [{"nombre": "Carretón mediano", "es_acoplado": True}]}},
+        {"nombre": "Retroexcavadora 406", "specs": {}},
+    ]
+    nombradas = maquinas_nombradas("¿Tu excavadora entra en los 3 m del carretón?", fichas)
+    assert [f["nombre"] for f in nombradas] == ["Ford Cargo 1832 - Tractor"]
+    assert maquinas_nombradas("¿En qué localidad es la obra?", fichas) == []
