@@ -406,3 +406,20 @@ def test_nombrar_una_marca_para_negarla_sigue_permitido():
     """El detector de negativas de servicio no puede pisar al de marcas."""
     permitido = tokens_del_catalogo([{"nombre": "Excavadora 320 DL", "marca": "Caterpillar"}])
     assert menciones_ajenas("No, Bobcat la verdad que no la manejamos.", permitido) == []
+
+
+def test_el_carreton_lleva_maquinas_no_se_les_cuelga():
+    """El carretón es de los tractores y LLEVA máquinas (2026-09-28): "la
+    retro va en el carretón" es una frase normal, no un implemento ajeno."""
+    from app.catalog_guard import implementos_mal_colgados
+
+    modelos = {
+        "Ford Cargo 1832 - Tractor": {
+            "implementos": [{"nombre": "Carretón mediano", "es_acoplado": True}]
+        },
+        "Retroexcavadora 406": {},
+        "Minicargadora 252B": {"implementos": [{"nombre": "Martillo hidráulico chico"}]},
+    }
+    assert implementos_mal_colgados("La Retroexcavadora 406 va en el carretón.", modelos) == []
+    # El martillo sigue siendo de la mini.
+    assert implementos_mal_colgados("La Retroexcavadora 406 con martillo te sirve.", modelos)

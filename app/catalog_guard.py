@@ -235,6 +235,10 @@ def implementos_mal_colgados(
         for imp in implementos:
             if not isinstance(imp, dict) or not imp.get("nombre"):
                 continue
+            # Un carretón o una batea LLEVAN máquinas: "la retro va en el
+            # carretón" no le cuelga nada a la retro.
+            if imp.get("es_acoplado"):
+                continue
             nombre_imp = str(imp["nombre"])
             alias, propietarios = duenos.setdefault(nombre_imp, (alias_de(nombre_imp), []))
             propietarios.append(nombre)
