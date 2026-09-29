@@ -342,6 +342,7 @@ async def run_turn(
         profile=profile,
         trace=trace,
         reserva_activa=context.get("reservaActiva"),
+        sabe_nombre=bool(((context.get("contact") or {}).get("ficha") or {}).get("nombre")),
         # Si el lead dijo por dónde tiene que pasar la máquina, el veredicto
         # de acceso lo calcula el código (app/acceso.py), no el modelo.
         ancho_paso_m=paso_del_lead(del_lead),
@@ -435,6 +436,10 @@ async def run_turn(
     # nombre ESA máquina, escriba lo que escriba el modelo (app/booking_guard.py).
     if runtime.booking is not None:
         reply_text = confirm_booking(reply_text, runtime.booking)
+        # …y si la dejó tomada sin saber a nombre de quién, se lo pregunta:
+        # el asesor que confirma necesita saber a quién llama. Gemini no lo
+        # pedía aunque el prompt se lo dijera (2026-09-29).
+        reply_text = pedir_nombre(reply_text, runtime.sabe_nombre)
     sent = False
     if reply_text:
         sent = await _send(ctx, conv.id, str(crm_conv_id), reply_text)
@@ -634,6 +639,17 @@ async def _sin_promesa_de_busqueda(
         logger.error("turno %s: la segunda vuelta no respondió (%s)", identity, exc)
         return final_text
     return segundo if segundo and segundo.strip() else final_text
+
+
+PREGUNTA_NOMBRE = "¿A nombre de quién la anoto, así el asesor te ubica?"
+
+
+def pedir_nombre(texto: str | None, sabe_nombre: bool) -> str | None:
+    """Suma la pregunta por el nombre a la confirmación de la reserva, salvo
+    que ya lo sepa o que la respuesta ya lo esté preguntando."""
+    if sabe_nombre or not texto or "nombre" in texto.lower():
+        return texto
+    return f"{texto.rstrip()}\n\n{PREGUNTA_NOMBRE}"
 
 
 async def _sin_respuesta_a_ciegas(

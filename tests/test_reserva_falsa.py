@@ -225,7 +225,13 @@ async def test_si_afirma_sin_reservar_se_le_avisa_y_reserva(respx_mock):
     body, reservas, textos = await _turno(respx_mock, llm, "me quedo con la 406, tomala")
 
     assert reservas.call_count == 1
-    assert textos == ["Te dejé tomada la 406 el sáb 19 y dom 20. Un asesor te confirma."]
+    # Sin nombre real en la ficha, la confirmación suma la pregunta (2026-09-29).
+    assert textos == [
+        "Te dejé tomada la 406 el sáb 19 y dom 20. Un asesor te confirma.
+
+"
+        "¿A nombre de quién la anoto, así el asesor te ubica?"
+    ]
     alerta = _alertas(llm)
     assert len(alerta) == 1 and "te la dejé tomada" in alerta[0]
 

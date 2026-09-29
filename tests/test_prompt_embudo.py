@@ -255,3 +255,14 @@ def test_con_el_nombre_en_la_ficha_se_usa_ese():
     )
     assert "Nombre del lead (te lo dijo él): Héctor Ruiz." in p
     assert "SIN confirmar" not in p
+
+
+def test_al_dejarla_tomada_sin_nombre_se_lo_pregunta():
+    """En vivo (2026-09-29): Gemini dejaba la máquina tomada sin pedir el
+    nombre aunque el prompt lo dijera, y en la Bandeja seguía "H"."""
+    from app.turn import PREGUNTA_NOMBRE, pedir_nombre
+
+    assert pedir_nombre("¡Listo! Te la dejé tomada.", False).endswith(PREGUNTA_NOMBRE)
+    assert pedir_nombre("¡Listo! Te la dejé tomada.", True) == "¡Listo! Te la dejé tomada."
+    ya = "Listo, ¿a nombre de quién la anoto?"
+    assert pedir_nombre(ya, False) == ya

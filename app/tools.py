@@ -600,8 +600,12 @@ class ToolRuntime:
         alto_paso_m: float | None = None,
         hablo_de_acceso: bool = False,
         del_lead: list[str] | None = None,
+        sabe_nombre: bool = False,
     ) -> None:
         self._ctx = ctx
+        # ¿El lead ya dijo su nombre real (está en la ficha)? El de WhatsApp
+        # no cuenta: "H", "mis hijos los amo mucho" (2026-09-29).
+        self.sabe_nombre = sabe_nombre
         # Si el lead quiere trasladar una máquina, en qué carretón va lo
         # calcula el código con el peso y el tipo que dijo (app/traslado.py).
         self._del_lead = list(del_lead or [])
@@ -714,6 +718,8 @@ class ToolRuntime:
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.
         ficha = {k: v for k, v in args.items() if v is not None}
+        if str(ficha.get("nombre") or "").strip():
+            self.sabe_nombre = True
         if not ficha:
             return {"ok": True, "nota": "sin campos nuevos"}
         await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
@@ -1096,6 +1102,13 @@ class ToolRuntime:
                     "usando el oferta_id exacto. Si quiere traslado, cotizá "
                     "aparte."
                     + self._aviso_reserva_existente()
+                    + (
+                        ""
+                        if self.sabe_nombre
+                        else " Todavía no sabés su nombre real (el de WhatsApp no "
+                        "cuenta): en ESTE mensaje, junto con la propuesta, "
+                        "preguntale '¿a nombre de quién la anoto?'."
+                    )
                 ),
             }
         return {
