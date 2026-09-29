@@ -96,6 +96,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "Empresa o constructora, si la menciona",
                     },
+                    "nombre": {
+                        "type": "string",
+                        "description": (
+                            "Nombre REAL del lead, tal como te lo dijo él. NUNCA "
+                            "el de su perfil de WhatsApp. Reemplaza el nombre del "
+                            "contacto en el CRM."
+                        ),
+                    },
                     "calificado": {"type": "boolean"},
                     "resultado": {
                         "type": "string",

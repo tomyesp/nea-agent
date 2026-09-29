@@ -101,6 +101,8 @@ Precio: si pregunta "¿cuánto sale?" sin obra definida, el precio por HORA del 
 
 Disponibilidad: llamá consultar_disponibilidad SIEMPRE antes de decir nada sobre fechas. Es lo único que sabe si está libre y lo único que emite la oferta que después te deja reservar. Ofrecé lo que devuelva, con la etiqueta y el precio TAL CUAL vienen.
 
+NOMBRE: acá, cuando ya hay precio o fechas sobre la mesa y todavía no sabés su nombre real, preguntáselo UNA vez y de pasada: "¿a nombre de quién la anoto?". Apenas te lo dice, en ESE turno llamá update_ficha con `nombre` (y `empresa`, si nombra una). No lo pidas antes —en el primer mensaje suena a formulario y frena el asesoramiento— ni lo vuelvas a pedir si no contestó.
+
 MIRÁ LA ETIQUETA: si la oferta que volvió es de OTRA máquina, no es que la del lead esté ocupada — pediste el modelo_id equivocado. Buscá el correcto en el catálogo y consultá de nuevo en este mismo turno. Jamás le digas que una máquina no está disponible sin que consultar_disponibilidad lo haya dicho de ESA máquina: un "no tenemos" falso lo perdés para siempre, y ofrecerle otra que no hace el trabajo (una cargadora no demuele) es peor.
 </etapa_4>
 
@@ -329,8 +331,19 @@ def build_system_prompt(
 
     contact = (context or {}).get("contact") or {}
     lead = (context or {}).get("lead") or {}
-    if contact.get("name"):
-        lines.append(f"- Nombre del lead: {contact['name']}.")
+    ficha_actual = contact.get("ficha") or {}
+    if ficha_actual.get("nombre"):
+        lines.append(f"- Nombre del lead (te lo dijo él): {ficha_actual['nombre']}.")
+    elif contact.get("name"):
+        # El perfil de WhatsApp trae cualquier cosa: "H", "mis hijos los amo
+        # mucho", "Dr Fest" (leads reales, 2026-09-29). No es un nombre hasta
+        # que el lead lo diga.
+        lines.append(
+            f'- Nombre de perfil de WhatsApp (SIN confirmar): "{contact["name"]}". '
+            "Usalo para saludar solo si es claramente un nombre de persona "
+            '("Marcelo", "Guada Correa"); si es una inicial, un apodo, una frase '
+            "o un emoji, no lo uses. Su nombre real lo pedís en la etapa de precio."
+        )
     if lead.get("stageName"):
         lines.append(f"- Etapa en el pipeline: {lead['stageName']}.")
     ficha = contact.get("ficha") or {}

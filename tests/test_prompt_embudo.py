@@ -227,3 +227,31 @@ def test_el_default_es_no_escribir_primero():
     from app.config import Settings
 
     assert Settings.model_fields["followup_hours"].default == 0.0
+
+
+def test_el_nombre_de_whatsapp_no_se_toma_como_real():
+    """Leads reales (2026-09-29): perfiles "H", "mis hijos los amo mucho"."""
+    p = build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea"),
+        context={"contact": {"name": "mis hijos los amo mucho"}, "conversation": {}},
+        conv=Conversation(id=1, wa_identity="5493511111111"),
+        offered=[],
+        inventory=True,
+        tz=TZ,
+    )
+    assert 'Nombre de perfil de WhatsApp (SIN confirmar): "mis hijos los amo mucho"' in p
+    assert "¿a nombre de quién la anoto?" in p
+    assert "update_ficha con `nombre`" in p
+
+
+def test_con_el_nombre_en_la_ficha_se_usa_ese():
+    p = build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea"),
+        context={"contact": {"name": "H", "ficha": {"nombre": "Héctor Ruiz"}}, "conversation": {}},
+        conv=Conversation(id=1, wa_identity="5493511111111"),
+        offered=[],
+        inventory=True,
+        tz=TZ,
+    )
+    assert "Nombre del lead (te lo dijo él): Héctor Ruiz." in p
+    assert "SIN confirmar" not in p
