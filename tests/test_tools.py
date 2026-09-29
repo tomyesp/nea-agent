@@ -995,3 +995,23 @@ async def test_si_la_retro_ya_vino_no_se_duplica(runtime_y_ctx, respx_mock):
     assert [m["nombre"] for m in result["maquinas"]] == ["Excavadora 320 DL", "Retroexcavadora 406"]
     assert route.call_count == 1
     assert "sumé" not in result["instrucciones"]
+
+
+async def test_el_nombre_que_no_dijo_el_lead_no_se_guarda(respx_mock):
+    """En vivo (2026-09-29): guardó "H" —el perfil de WhatsApp— como nombre
+    real sin que el lead dijera nada, y ya nadie se lo preguntó."""
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    route = respx_mock.put(f"{CRM_URL}/api/bot/ficha").mock(
+        return_value=httpx.Response(200, json={"ficha": {}})
+    )
+    runtime = ToolRuntime(ctx, conv, CRM_CONV_ID, del_lead=["hola", "si, dale"])
+    r = await runtime.execute("update_ficha", {"nombre": "H", "tipo_obra": "zanja"})
+    assert r["nota"].startswith("no guardé el nombre")
+    assert json.loads(route.calls[0].request.content)["ficha"] == {"tipo_obra": "zanja"}
+    assert runtime.sabe_nombre is False
+
+    runtime2 = ToolRuntime(ctx, conv, CRM_CONV_ID, del_lead=["soy carlos mamani"])
+    r2 = await runtime2.execute("update_ficha", {"nombre": "Carlos Mamani"})
+    await ctx.crm.aclose()
+    assert r2 == {"ok": True} and runtime2.sabe_nombre is True

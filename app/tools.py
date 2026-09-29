@@ -19,6 +19,7 @@ nunca tumba el turno.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from app.crm import (
@@ -28,7 +29,7 @@ from app.crm import (
     RecentlyTaken,
 )
 from app.acceso import Paso, ficha_para_el_paso, metros_de
-from app.catalog_guard import fichas_del_crm
+from app.catalog_guard import fichas_del_crm, normalizar
 from app.traslado import carretones_de, veredicto_carreton
 from app.fechas import parse_instante, rango_de_uso, vista_de_periodo
 from app.profile import BusinessProfile
@@ -428,6 +429,13 @@ def tool_schemas(inventory_enabled: bool = True) -> list[dict[str, Any]]:
     ]
 
 
+def _lo_dijo_el_lead(nombre: str, del_lead: list[str]) -> bool:
+    """¿Cada palabra del nombre está en algo que escribió el lead?"""
+    palabras = set(re.findall(r"[a-z0-9]+", normalizar(" ".join(del_lead or []))))
+    del_nombre = re.findall(r"[a-z0-9]+", normalizar(nombre))
+    return bool(del_nombre) and all(p in palabras for p in del_nombre)
+
+
 def _pesos(cents: Any) -> str:
     """Centavos → '$1.391.500'. El LLM copia esto tal cual: nada de decimales
     ni de notación científica, que el modelo después lee mal y dice otra cosa."""
@@ -718,12 +726,25 @@ class ToolRuntime:
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.
         ficha = {k: v for k, v in args.items() if v is not None}
+        nota = None
         if str(ficha.get("nombre") or "").strip():
-            self.sabe_nombre = True
+            if _lo_dijo_el_lead(str(ficha["nombre"]), self._del_lead):
+                self.sabe_nombre = True
+            else:
+                # Pasó en vivo (2026-09-29): sin que el lead dijera nada, el
+                # modelo guardó "H" —su perfil de WhatsApp— como nombre real, y
+                # como "ya lo sabía" nadie se lo preguntó.
+                ficha.pop("nombre")
+                nota = (
+                    "no guardé el nombre: el lead no lo escribió en la charla "
+                    "(el de WhatsApp no cuenta). Preguntáselo."
+                )
         if not ficha:
+            if nota:
+                return {"ok": False, "error": "nombre_no_dicho", "detalle": nota}
             return {"ok": True, "nota": "sin campos nuevos"}
         await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
-        return {"ok": True}
+        return {"ok": True, "nota": nota} if nota else {"ok": True}
 
     def _sin_inventario(self) -> dict[str, Any]:
         """Este CRM no tiene catálogo: dejar de prometer máquinas, no reintentar."""
